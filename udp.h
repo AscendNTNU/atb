@@ -1,4 +1,4 @@
-// UDP socket wrapper for OSX, Linux and Windows v1.0
+// UDP socket wrapper for OSX, Linux and Windows
 // Provides basic socket functionality of opening and closing a socket,
 // and sending and receiving sized raw blocks of memory.
 //
