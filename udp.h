@@ -20,6 +20,9 @@
 // --------------
 //   1.05 (15. jan 2016) send and recv take void* instead of char*
 //                       to avoid unecessary conversions in user-level code.
+//                       Added explanatory notes for the functions.
+//                       Added udp_open_ip which takes an explicit IP to
+//                       bind to.
 //   1.02 (16. dec 2015) Discovered bug in udp_recv_all when using blocking
 //                       sockets. Added preliminary fix.
 //   1.00 (15. nov 2015) Added missing include for memcpy on linux
@@ -49,23 +52,53 @@ struct udp_addr
     uint16_t port;
 };
 
-// Basic functionality
-// -------------------
+// Your computer may have multiple network adapters, each with
+// its own IP address. Because of this I have two functions,
+// udp_open_ip and udp_open. If you care about which adapter
+// is used in the binding process, use the former and specify
+// a valid port *and* ip pair.
 
-bool udp_open(uint16_t listen_port, bool non_blocking);
-int  udp_recv(void *data, uint32_t size, udp_addr *src);
-int  udp_send(void *data, uint32_t size, udp_addr dst);
+bool udp_open_ip(udp_addr addr, bool non_blocking);
+bool udp_open(uint16_t port, bool non_blocking);
 void udp_close();
 
-// Convenience functions
-// ---------------------
+// data, size
+//   Before calling this function you need to prepare a
+//   buffer that is big enough to hold size number of bytes.
+// src
+//   If nonzero, the struct pointed to by src is filled with
+//   the IP address and the port number of the UDP connection
+//   that sent the data.
+// Return
+//   Number of bytes read.
+int  udp_recv(void *data, uint32_t size, udp_addr *src);
 
-// Read as many packets as are available, and store
-// the latest packet in the memory location pointed
-// to by "result".
-// return 1: If atleast one packet with "size" number
-//           of bytes was received.
-// return 0: If no such packet was received.
+// data, size
+//   A pointer to a block of contiguous memory of size bytes.
+// dst
+//   The IP address and port number of the receiving client socket.
+// Return
+//   Number of bytes sent.
+int  udp_send(void *data, uint32_t size, udp_addr dst);
+
+// result, buffer, size
+//   You allocate these. They must both be atleast size bytes big.
+// src
+//   If nonzero, the struct pointed to by src is filled with
+//   the IP address and the port number of the UDP connection
+//   that sent the data.
+// Return
+//   true if atleast one packet with size number of bytes was
+//   received, with the most recent packet stored in the buffer
+//   pointed to by result.
+//   false if no packets were read.
+// Remarks
+//   This function will attempt to exhaust the pending packets
+//   for the bound socket, and return the last valid packet.
+//   The function does not play well with a blocking socket,
+//   especially if the rate at which this function is called
+//   is lower than the rate of incoming packets. In that case,
+//   packets will pile up, and you will get stale data.
 bool udp_read_all(void *result, void *buffer,
                   uint32_t size, udp_addr *src);
 
@@ -80,7 +113,7 @@ bool udp_read_all(void *result, void *buffer,
 static int udp_socket = 0;
 static int udp_is_blocking = 0;
 
-bool udp_open(uint16_t listen_port, bool non_blocking)
+bool udp_open_ip(udp_addr addr, bool non_blocking)
 {
     udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_socket < 0)
@@ -92,8 +125,18 @@ bool udp_open(uint16_t listen_port, bool non_blocking)
 
     struct sockaddr_in address = {};
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(listen_port);
+    if (addr.ip0 == 0 &&
+        addr.ip1 == 0 &&
+        addr.ip2 == 0 &&
+        addr.ip3 == 0)
+        address.sin_addr.s_addr = INADDR_ANY;
+    else
+        address.sin_addr.s_addr = htonl(
+        (addr.ip0 << 24) |
+        (addr.ip1 << 16) |
+        (addr.ip2 <<  8) |
+        (addr.ip3));
+    address.sin_port = htons(addr.port);
 
     if (bind(udp_socket, (struct sockaddr *)&address, sizeof(address)) < 0)
     {
@@ -184,7 +227,7 @@ void udp_close()
 static uint32_t udp_socket = 0;
 static int udp_is_blocking = 0;
 
-bool udp_open(uint16_t listen_port, bool non_blocking)
+bool udp_open_ip(udp_addr addr, bool non_blocking)
 {
     WSADATA WsaData;
     if (WSAStartup(MAKEWORD(2, 2), &WsaData) != NO_ERROR)
@@ -205,8 +248,18 @@ bool udp_open(uint16_t listen_port, bool non_blocking)
     // Bind socket to a port
     sockaddr_in address;
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(listen_port);
+    if (addr.ip0 == 0 &&
+        addr.ip1 == 0 &&
+        addr.ip2 == 0 &&
+        addr.ip3 == 0)
+        address.sin_addr.s_addr = INADDR_ANY;
+    else
+        address.sin_addr.s_addr = htonl(
+        (addr.ip0 << 24) |
+        (addr.ip1 << 16) |
+        (addr.ip2 <<  8) |
+        (addr.ip3));
+    address.sin_port = htons(addr.port);
     if (bind(udp_socket, (const sockaddr*)&address, sizeof(sockaddr_in)) < 0)
     {
         // Failed to bind socket (maybe port was taken?)
@@ -288,6 +341,17 @@ void udp_close()
     WSACleanup();
 }
 #endif
+
+bool udp_open(uint16_t port, bool non_blocking)
+{
+    udp_addr addr;
+    addr.ip0 = 0;
+    addr.ip1 = 0;
+    addr.ip2 = 0;
+    addr.ip3 = 0;
+    addr.port = port;
+    return udp_open_ip(addr, non_blocking);
+}
 
 bool udp_read_all(void *result,
                   void *buffer,
