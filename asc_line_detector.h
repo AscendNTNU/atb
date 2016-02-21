@@ -127,6 +127,7 @@ struct asci_Feature
     int32_t y;
     int16_t gx;
     int16_t gy;
+    int16_t gg;
 };
 
 void asci_sobel(
@@ -162,6 +163,7 @@ void asci_sobel(
                 feature.y = y;
                 feature.gx = gx;
                 feature.gy = gy;
+                feature.gg = gg;
                 out_features[feature_count++] = feature;
             }
         }
@@ -218,23 +220,28 @@ void asci_hough(
     float        *out_r_min,
     float        *out_r_max)
 {
-    int32_t count = sample_count;
-    if (in_feature_count < sample_count)
-        count = in_feature_count;
-
     float t_min = ASCI_FLT_MAX;
     float t_max = -ASCI_FLT_MAX;
     float r_min = ASCI_FLT_MAX;
     float r_max = -ASCI_FLT_MAX;
+    int32_t count = 0;
 
-    for (int32_t sample = 0; sample < count; sample++)
+    for (int32_t sample = 0; sample < sample_count; sample++)
     {
         int32_t sample_i1 = asci_xor128() % (in_feature_count);
         int32_t sample_i2 = asci_xor128() % (in_feature_count);
         asci_Feature f1 = in_features[sample_i1];
         asci_Feature f2 = in_features[sample_i2];
 
-        // TODO: Use gradient info?
+        // Reject samples whose edge directions differ greatly
+        if (f1.gg > 0 && f2.gg > 0)
+        {
+            float g_distance = abs((float)(f1.gx*f2.gx+f1.gy*f2.gy)/(float)(f1.gg*f2.gg));
+            if (g_distance > 0.75f)
+            {
+                continue;
+            }
+        }
         float dx = (float)(f2.x - f1.x);
         float dy = (float)(f2.y - f1.y);
         float t = atan((float)dy / (float)dx) + ASCI_PI / 2.0f;
@@ -247,12 +254,14 @@ void asci_hough(
         if (t < t_min) t_min = t;
         if (t > t_max) t_max = t;
 
-        out_votes[sample].t = t;
-        out_votes[sample].r = r;
-        out_votes[sample].x1 = f1.x;
-        out_votes[sample].y1 = f1.y;
-        out_votes[sample].x2 = f2.x;
-        out_votes[sample].y2 = f2.y;
+        asci_Vote vote = {0};
+        vote.t = t;
+        vote.r = r;
+        vote.x1 = f1.x;
+        vote.y1 = f1.y;
+        vote.x2 = f2.x;
+        vote.y2 = f2.y;
+        out_votes[count++] = vote;
     }
 
     *out_t_min = t_min;
@@ -282,17 +291,11 @@ void asc_find_lines(
     int32_t   in_height,
     asc_Line **out_lines,
     int32_t  *out_count,
-    int16_t   param_feature_threshold,
-    int32_t   param_max_ms_iterations,
-    float     param_cluster_size_t,
-    float     param_cluster_size_r)
+    int16_t   sobel_threshold,
+    int32_t   cluster_iterations,
+    float     cluster_size_t,
+    float     cluster_size_r)
 {
-    // May want to let these be user-parameters
-    int16_t threshold = param_feature_threshold;
-    int32_t max_iterations = param_max_ms_iterations;
-    float cluster_size_t = param_cluster_size_t;
-    float cluster_size_r = param_cluster_size_r;
-
     static asci_Feature features[1920*1080];
     int32_t feature_count = 0;
 
@@ -301,11 +304,27 @@ void asc_find_lines(
         in_gray,
         in_width,
         in_height,
-        threshold,
+        sobel_threshold,
         features,
         &feature_count);
 
-    const int32_t sample_count = 4096;
+    GDB_SKIP("sobel features",
+    {
+        Ortho(0.0f, in_width, in_height, 0.0f);
+        glPointSize(2.0f);
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        glBegin(GL_POINTS);
+        {
+            for (int i = 0; i < feature_count; i++)
+            {
+                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+                glVertex2f(features[i].x, features[i].y);
+            }
+        }
+        glEnd();
+    });
+
+    const int32_t sample_count = 4096*2;
     static asci_Vote votes[sample_count];
     int32_t vote_count = 0;
     float t_min = 0.0f;
@@ -321,14 +340,13 @@ void asc_find_lines(
         &t_min, &t_max,
         &r_min, &r_max);
 
-    // TIMING("cluster detection");
     int32_t quad_count_t = 1 + (int32_t)((t_max - t_min) / cluster_size_t);
     int32_t quad_count_r = 1 + (int32_t)((r_max - r_min) / cluster_size_r);
 
     // Distribute quads on a grid
-    int32_t quad_count = quad_count_t*quad_count_r;
-    asci_Quad *quads = (asci_Quad*)calloc(quad_count, sizeof(asci_Quad));
-    asci_Quad *quads_swap = (asci_Quad*)calloc(quad_count, sizeof(asci_Quad));
+    int32_t active_quads = quad_count_t*quad_count_r;
+    asci_Quad *quads = (asci_Quad*)calloc(active_quads, sizeof(asci_Quad));
+    asci_Quad *quads_swap = (asci_Quad*)calloc(active_quads, sizeof(asci_Quad));
     {
         asci_Quad *quad = quads;
         for (int32_t ri = 0; ri < quad_count_r; ri++)
@@ -349,12 +367,14 @@ void asc_find_lines(
 
     // Perform iterative mean-shift cluster detection
     // TODO(Simen): Terminate loop when the quads have converged?
-    for (int32_t iteration = 0; iteration < max_iterations; iteration++)
+    for (int32_t iteration = 0; iteration < cluster_iterations; iteration++)
     {
+        cluster_size_t *= 0.96f;
+        cluster_size_r *= 0.96f;
         // compute center of mass for each quad
         // and prune quads with low count
-        int32_t new_quad_count = 0;
-        for (int32_t qi = 0; qi < quad_count; qi++)
+        int32_t new_active_quads = 0;
+        for (int32_t qi = 0; qi < active_quads; qi++)
         {
             asci_Quad quad = quads[qi];
             quad.count = 0;
@@ -363,7 +383,7 @@ void asc_find_lines(
             float ct = (quad.t0 + quad.t1) / 2.0f;
             float cr = (quad.r0 + quad.r1) / 2.0f;
 
-            for (int32_t i = 0; i < sample_count; i++)
+            for (int32_t i = 0; i < vote_count; i++)
             {
                 asci_Vote vote = votes[i];
                 float r = vote.r;
@@ -387,21 +407,21 @@ void asc_find_lines(
             {
                 quad.mt /= (float)quad.count;
                 quad.mr /= (float)quad.count;
-                quads_swap[new_quad_count++] = quad;
+                quads_swap[new_active_quads++] = quad;
             }
         }
 
         // swap buffers
         {
-            quad_count = new_quad_count;
-            new_quad_count = 0;
+            active_quads = new_active_quads;
+            new_active_quads = 0;
             asci_Quad *temp = quads;
             quads = quads_swap;
             quads_swap = temp;
         }
 
         // Merge quads that are "close" together into one quad
-        for (int32_t ia = 0; ia < quad_count; ia++)
+        for (int32_t ia = 0; ia < active_quads; ia++)
         {
             asci_Quad a = quads[ia];
             if (a.merged)
@@ -409,7 +429,7 @@ void asc_find_lines(
             int32_t overlaps = 0;
             float a_center_t = (a.t0 + a.t1) / 2.0f;
             float a_center_r = (a.r0 + a.r1) / 2.0f;
-            for (int32_t ib = 0; ib < quad_count; ib++)
+            for (int32_t ib = 0; ib < active_quads; ib++)
             {
                 asci_Quad b = quads[ib];
                 if (ib == ia || b.merged)
@@ -431,19 +451,19 @@ void asc_find_lines(
             // overlap takes the position of the one with higher
             // overlap... which I guess is ok maybe?
             a.overlaps += overlaps;
-            quads_swap[new_quad_count++] = a;
+            quads_swap[new_active_quads++] = a;
         }
 
         // swap buffers
         {
-            quad_count = new_quad_count;
-            new_quad_count = 0;
+            active_quads = new_active_quads;
+            new_active_quads = 0;
             asci_Quad *temp = quads;
             quads = quads_swap;
             quads_swap = temp;
         }
 
-        GDB("hough output",
+        GDB_SKIP("hough output",
         {
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
             Ortho(t_min, t_max, r_min, r_max);
@@ -453,7 +473,7 @@ void asc_find_lines(
             glBegin(GL_POINTS);
             {
                 glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
-                for (s32 i = 0; i < sample_count; i++)
+                for (s32 i = 0; i < vote_count; i++)
                 {
                     asci_Vote vote = votes[i];
                     glVertex2f(vote.t, vote.r);
@@ -468,7 +488,7 @@ void asc_find_lines(
             glLineWidth(2.0f);
             glBegin(GL_LINES);
             {
-                for (s32 i = 0; i < quad_count; i++)
+                for (s32 i = 0; i < active_quads; i++)
                 {
                     asci_Quad quad = quads[i];
 
@@ -479,8 +499,6 @@ void asc_find_lines(
                         mouse_r >= quad.r0 && mouse_r <= quad.r1)
                     {
                         hover = true;
-                        SetTooltip("(%.2f %.2f)\ncount: %d\noverlaps: %d\niteration: %d\nactive: %d",
-                                   ct, cr, quad.count, quad.overlaps, iteration, quad_count);
                     }
 
                     if (hover)
@@ -490,6 +508,26 @@ void asc_find_lines(
                         glVertex2f(quad.t1, cr + quad.mr);
                         glVertex2f(ct + quad.mt, quad.r0);
                         glVertex2f(ct + quad.mt, quad.r1);
+
+                        r32 sum_var_t = 0.0f;
+                        r32 sum_var_r = 0.0f;
+                        for (s32 i = 0; i < vote_count; i++)
+                        {
+                            asci_Vote vote = votes[i];
+                            r32 t = vote.t;
+                            r32 r = vote.r;
+                            if (r >= quad.r0 && r <= quad.r1 &&
+                                t >= quad.t0 && t <= quad.t1)
+                            {
+                                sum_var_t += (t-ct)*(t-ct);
+                                sum_var_r += (r-cr)*(r-cr);
+                            }
+                        }
+                        r32 var_t = sum_var_t / quad.count;
+                        r32 var_r = sum_var_r / quad.count;
+
+                        SetTooltip("center: (%.2f %.2f)\nvariance: (%.2f %.2f)\ncount: %d\noverlaps: %d\niteration: %d\nactive: %d",
+                                   ct, cr, 1000.0f*var_t, var_r, quad.count, quad.overlaps, iteration, active_quads);
                     }
                     else if (quad.overlaps >= 2 && quad.count > 25)
                         glColor4f(1.0f, 0.3f, 0.3f, 0.5f);
@@ -506,7 +544,7 @@ void asc_find_lines(
         });
 
         // mean shift (TODO: merge with above for)
-        for (int32_t qi = 0; qi < quad_count; qi++)
+        for (int32_t qi = 0; qi < active_quads; qi++)
         {
             asci_Quad *quad = &quads[qi];
             float ct = (quad->t0 + quad->t1) / 2.0f;
@@ -519,163 +557,215 @@ void asc_find_lines(
     }
 
     int32_t final_lines_count = 0;
-    asc_Line *final_lines = (asc_Line*)calloc(sample_count, sizeof(asc_Line));
+    asc_Line *final_lines = (asc_Line*)calloc(vote_count, sizeof(asc_Line));
     {
-        for (int32_t qi = 0; qi < quad_count; qi++)
+        for (int32_t qi = 0; qi < active_quads; qi++)
         {
             asci_Quad quad = quads[qi];
-            // TODO: Formalize this check
-            if (quad.overlaps > 4 && quad.count > 100)
+            // TODO(Simen): How do we decide which quads to keep or reject?
+            // TODO: Use CoM?
+            float t = (quad.t0 + quad.t1)/2.0f;
+            float r = (quad.r0 + quad.r1)/2.0f;
+
+            // Note (Simen): If we DO normalize the
+            // point coordinates, make sure that we
+            // use a UNIFORM scale. Otherwise, we
+            // will be morphing the slope of the normal.
+            float normal_x = cos(t);
+            float normal_y = sin(t);
+            float tangent_x = normal_y;
+            float tangent_y = -normal_x;
+
+            float normalization_factor = 1.0f / in_width;
+
+            // Compute two base points from which
+            // line distance will be measured relative to.
+            float x0, y0, x1, y1;
             {
-                // TODO: Use CoM?
-                float t = (quad.t0 + quad.t1)/2.0f;
-                float r = (quad.r0 + quad.r1)/2.0f;
-
-                // Note (Simen): If we DO normalize the
-                // point coordinates, make sure that we
-                // use a UNIFORM scale. Otherwise, we
-                // will be morphing the slope of the normal.
-                float normal_x = cos(t);
-                float normal_y = sin(t);
-                float tangent_x = normal_y;
-                float tangent_y = -normal_x;
-
-                float normalization_factor = 1.0f / in_width;
-
-                // Compute two base points from which
-                // line distance will be measured relative to.
-                float x0, y0, x1, y1;
+                if (abs(normal_y) > abs(normal_x))
                 {
-                    if (abs(normal_y) > abs(normal_x))
-                    {
-                        x0 = 0.0f;
-                        x1 = in_width;
-                        y0 = (r-x0*normal_x)/normal_y;
-                        y1 = (r-x1*normal_x)/normal_y;
-                    }
-                    else
-                    {
-                        y0 = 0.0f;
-                        y1 = in_height;
-                        x0 = (r-y0*normal_y)/normal_x;
-                        x1 = (r-y1*normal_y)/normal_x;
-                    }
+                    x0 = 0.0f;
+                    x1 = in_width;
+                    y0 = (r-x0*normal_x)/normal_y;
+                    y1 = (r-x1*normal_x)/normal_y;
                 }
-
-                // Note(Simen): We normalize the coordinates before
-                // computing statistical properties. This is to avoid
-                // the numerical issues related to large numbers.
-                x0 *= normalization_factor;
-                x1 *= normalization_factor;
-                y0 *= normalization_factor;
-                y1 *= normalization_factor;
-
-                // Note(Simen): Estimate normalized line bounds
-                float l0, l1;
+                else
                 {
-                    int32_t N = 0;
-                    float mean_sum = 0.0f;
-                    float var_sum1 = 0.0f;
-                    float var_sum2 = 0.0f;
+                    y0 = 0.0f;
+                    y1 = in_height;
+                    x0 = (r-y0*normal_y)/normal_x;
+                    x1 = (r-y1*normal_y)/normal_x;
+                }
+            }
 
-                    // TODO: Study numerical issues here
-                    for (int32_t sample = 0; sample < sample_count; sample++)
+            // Note(Simen): We normalize the coordinates before
+            // computing statistical properties. This is to avoid
+            // the numerical issues related to large numbers.
+            x0 *= normalization_factor;
+            x1 *= normalization_factor;
+            y0 *= normalization_factor;
+            y1 *= normalization_factor;
+
+            // Note(Simen): Estimate normalized line bounds
+            float l0, l1;
+            {
+                int32_t N = 0;
+                float mean_sum = 0.0f;
+                float var_sum1 = 0.0f;
+                float var_sum2 = 0.0f;
+
+                // TODO: Study numerical issues here
+                for (int32_t sample = 0; sample < vote_count; sample++)
+                {
+                    // Skip samples that do not lie inside the quad
+                    if (votes[sample].r < quad.r0 ||
+                        votes[sample].r > quad.r1 ||
+                        votes[sample].t < quad.t0 ||
+                        votes[sample].t > quad.t1)
+                        continue;
+
+                    // Each vote came from two feature point samples
+                    // So I compute the distance along the line for
+                    // both of the source features.
+                    float sample_xs[] = {
+                        votes[sample].x1 * normalization_factor,
+                        votes[sample].x2 * normalization_factor
+                    };
+                    float sample_ys[] = {
+                        votes[sample].y1 * normalization_factor,
+                        votes[sample].y2 * normalization_factor
+                    };
+                    for (int32_t i = 0; i < 2; i++)
                     {
-                        // Skip samples that do not lie inside the quad
-                        if (votes[sample].r < quad.r0 ||
-                            votes[sample].r > quad.r1 ||
-                            votes[sample].t < quad.t0 ||
-                            votes[sample].t > quad.t1)
+                        float sample_x = sample_xs[i];
+                        float sample_y = sample_ys[i];
+                        float dx = sample_x - x0;
+                        float dy = sample_y - y0;
+                        float p = dx*normal_x + dy*normal_y;
+
+                        // Note(Simen): This is kind of a hack fix
+                        // for the outlier problem. Ideally, we want
+                        // to do some sort of least-squares regression
+                        // to a) find the actually best line (instead
+                        // of using CoM parameters) and b) fit the
+                        // uniform distribution.
+                        if (abs(p) > 15.0f * normalization_factor)
                             continue;
 
-                        // Each vote came from two feature point samples
-                        // So I compute the distance along the line for
-                        // both of the source features.
-                        float sample_xs[] = {
-                            votes[sample].x1 * normalization_factor,
-                            votes[sample].x2 * normalization_factor
-                        };
-                        float sample_ys[] = {
-                            votes[sample].y1 * normalization_factor,
-                            votes[sample].y2 * normalization_factor
-                        };
-                        for (int32_t i = 0; i < 2; i++)
-                        {
-                            float sample_x = sample_xs[i];
-                            float sample_y = sample_ys[i];
-                            float dx = sample_x - x0;
-                            float dy = sample_y - y0;
-                            float p = dx*normal_x + dy*normal_y;
+                        float l = dx*tangent_x + dy*tangent_y;
 
-                            // Note(Simen): This is kind of a hack fix
-                            // for the outlier problem. Ideally, we want
-                            // to do some sort of least-squares regression
-                            // to a) find the actually best line (instead
-                            // of using CoM parameters) and b) fit the
-                            // uniform distribution.
-                            if (abs(p) > 15.0f * normalization_factor)
-                                continue;
+                        // See: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
+                        float cond_shift = 0.5f;
+                        mean_sum += l;
+                        var_sum1 += l-cond_shift;
+                        var_sum2 += (l-cond_shift)*(l-cond_shift);
 
-                            float l = dx*tangent_x + dy*tangent_y;
-
-                            // See: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance
-                            float cond_shift = 0.5f;
-                            mean_sum += l;
-                            var_sum1 += l-cond_shift;
-                            var_sum2 += (l-cond_shift)*(l-cond_shift);
-
-                            N++;
-                        }
+                        N++;
                     }
-
-                    float mean = mean_sum / N;
-                    float var = (var_sum2 - var_sum1*var_sum1/N)/(N-1);
-                    float var_std = sqrt(var);
-                    float sqrt3 = 1.7321f;
-                    l0 = mean - sqrt3*var_std;
-                    l1 = mean + sqrt3*var_std;
                 }
 
-                // Note(Simen): Estimate dominant color of the line
-                // by sampling input points along the best fit line.
-                float color_r, color_g, color_b;
-                {
-                    int32_t color_samples = 32;
-                    float sum_color_r = 0.0f;
-                    float sum_color_g = 0.0f;
-                    float sum_color_b = 0.0f;
-                    float dl = 1.0f / color_samples;
-                    for (int32_t i = 0; i < color_samples; i++)
-                    {
-                        float l = l0 + (l1-l0)*i*dl;
-                        float x_ndc = x0 + tangent_x*l;
-                        float y_ndc = y0 + tangent_y*l;
-                        int32_t x_rgb = asci_round_positive(x_ndc / normalization_factor);
-                        int32_t y_rgb = asci_round_positive(y_ndc / normalization_factor);
-                        x_rgb = asci_clamp_s32(x_rgb, 0, in_width-1);
-                        y_rgb = asci_clamp_s32(y_rgb, 0, in_height-1);
-                        uint8_t *rgb_pixel = &in_rgb[(x_rgb+y_rgb*in_width)*3];
-                        sum_color_r += rgb_pixel[0] / 255.0f;
-                        sum_color_g += rgb_pixel[1] / 255.0f;
-                        sum_color_b += rgb_pixel[2] / 255.0f;
-                    }
-                    color_r = sum_color_r / color_samples;
-                    color_g = sum_color_g / color_samples;
-                    color_b = sum_color_b / color_samples;
-                }
-
-                asc_Line line = {0};
-                line.t = t;
-                line.r = r;
-                line.x_min = (x0 + tangent_x * l0) / normalization_factor;
-                line.x_max = (x0 + tangent_x * l1) / normalization_factor;
-                line.y_min = (y0 + tangent_y * l0) / normalization_factor;
-                line.y_max = (y0 + tangent_y * l1) / normalization_factor;
-                line.color_r = color_r;
-                line.color_g = color_g;
-                line.color_b = color_b;
-                final_lines[final_lines_count++] = line;
+                float mean = mean_sum / N;
+                float var = (var_sum2 - var_sum1*var_sum1/N)/(N-1);
+                float var_std = sqrt(var);
+                float sqrt3 = 1.7321f;
+                l0 = mean - sqrt3*var_std;
+                l1 = mean + sqrt3*var_std;
             }
+
+            // Note(Simen): Estimate dominant color of the line
+            // by sampling input points along the best fit line.
+            float color_r, color_g, color_b;
+            {
+                int32_t color_samples = 32;
+                float sum_color_r = 0.0f;
+                float sum_color_g = 0.0f;
+                float sum_color_b = 0.0f;
+                float dl = 1.0f / color_samples;
+                for (int32_t i = 0; i < color_samples; i++)
+                {
+                    float l = l0 + (l1-l0)*i*dl;
+                    float x_ndc = x0 + tangent_x*l;
+                    float y_ndc = y0 + tangent_y*l;
+                    int32_t x_rgb = asci_round_positive(x_ndc / normalization_factor);
+                    int32_t y_rgb = asci_round_positive(y_ndc / normalization_factor);
+                    x_rgb = asci_clamp_s32(x_rgb, 0, in_width-1);
+                    y_rgb = asci_clamp_s32(y_rgb, 0, in_height-1);
+                    uint8_t *rgb_pixel = &in_rgb[(x_rgb+y_rgb*in_width)*3];
+                    sum_color_r += rgb_pixel[0] / 255.0f;
+                    sum_color_g += rgb_pixel[1] / 255.0f;
+                    sum_color_b += rgb_pixel[2] / 255.0f;
+                }
+                color_r = sum_color_r / color_samples;
+                color_g = sum_color_g / color_samples;
+                color_b = sum_color_b / color_samples;
+            }
+
+            asc_Line line = {0};
+            line.t = t;
+            line.r = r;
+            line.x_min = (x0 + tangent_x * l0) / normalization_factor;
+            line.x_max = (x0 + tangent_x * l1) / normalization_factor;
+            line.y_min = (y0 + tangent_y * l0) / normalization_factor;
+            line.y_max = (y0 + tangent_y * l1) / normalization_factor;
+            line.color_r = color_r;
+            line.color_g = color_g;
+            line.color_b = color_b;
+            final_lines[final_lines_count++] = line;
+
+            GDB("line finalization",
+            {
+                Clear(0.0f, 0.0f, 0.0f, 1.0f);
+                static GLuint texture = 0;
+                if (!texture)
+                    texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+                Ortho(-1.0f, 1.0f, 1.0f, -1.0f);
+                DrawTexture(texture, 0.3f, 0.3f, 0.3f, 1.0f);
+
+                Ortho(0.0f, in_width, in_height, 0.0f);
+                BlendMode();
+                glBegin(GL_LINES);
+                glColor4f(line.color_r, line.color_g, line.color_b, 1.0f);
+                glVertex2f(line.x_min, line.y_min);
+                glVertex2f(line.x_max, line.y_max);
+                glEnd();
+
+                const s32 bin_count = 32;
+                r32 bins[bin_count];
+                for (s32 i = 0; i < bin_count; i++)
+                    bins[i] = 0.0f;
+
+                glPointSize(4.0f);
+                BlendMode(GL_ONE, GL_ONE);
+                glBegin(GL_POINTS);
+                glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
+                for (s32 i = 0; i < vote_count; i++)
+                {
+                    if (votes[i].t >= quad.t0 &&
+                        votes[i].t <= quad.t1 &&
+                        votes[i].r >= quad.r0 &&
+                        votes[i].r <= quad.r1)
+                    {
+                        r32 x1 = votes[i].x1;
+                        r32 y1 = votes[i].y1;
+                        r32 x2 = votes[i].x2;
+                        r32 y2 = votes[i].y2;
+                        glVertex2f(x1, y1);
+                        glVertex2f(x2, y2);
+
+                        r32 distance = (x1-line.x_min)*tangent_x + (y1-line.y_min)*tangent_y;
+                        r32 bin_min = -sqrt((r32)(in_width*in_width+in_height*in_height));
+                        r32 bin_max = sqrt((r32)(in_width*in_width+in_height*in_height));
+                        s32 bin = bin_count*(distance-bin_min)/(bin_max-bin_min);
+                        if (bin < 0) bin = 0;
+                        if (bin > bin_count-1) bin = bin_count-1;
+                        bins[bin] += 1.0f;
+                    }
+                }
+                glEnd();
+                PlotHistogram("##Histogram over distances", bins, bin_count, 0, 0, FLT_MAX, FLT_MAX, ImVec2(200, 200));
+                Text("x0: %.3f\ny0: %.3f\n", line.x_min, line.y_min);
+                Text("x1: %.3f\ny1: %.3f\n", line.x_max, line.y_max);
+            });
         }
     }
 
