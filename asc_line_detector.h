@@ -358,17 +358,55 @@ void asc_find_lines(
             max_vote = histogram[ti + ri*bins_t];
     }
 
-    const s32 peaks_to_extract = 8;
-    r32 peaks_t[peaks_to_extract];
-    r32 peaks_r[peaks_to_extract];
-    r32 suppression_window_t = 20.0f * ASCI_PI / 180.0f;
-    r32 suppression_window_r = 400.0f;
+    struct Peak
+    {
+        r32 maxima_r;
+        r32 maxima_t;
+        asc_Line line;
+    };
+    const s32 peaks_to_find = 8;
+    Peak peaks[peaks_to_find];
+    r32 suppression_window_t = 10.0f * ASCI_PI / 180.0f;
+    r32 suppression_window_r = 200.0f;
     r32 selection_window_t = 10.0f * ASCI_PI / 180.0f;
     r32 selection_window_r = 200.0f;
-    for (s32 iteration = 0; iteration < peaks_to_extract; iteration++)
+    r32 bin_size_t = (t_max-t_min) / bins_t;
+    r32 bin_size_r = (r_max-r_min) / bins_r;
+    s32 suppression_window_ti = round_r32_plus(suppression_window_t / bin_size_t);
+    s32 suppression_window_ri = round_r32_plus(suppression_window_r / bin_size_r);
+    s32 selection_window_ti = round_r32_plus(selection_window_t / bin_size_t);
+    s32 selection_window_ri = round_r32_plus(selection_window_r / bin_size_r);
+    if (suppression_window_ti % 2 != 0) suppression_window_ti++;
+    if (suppression_window_ri % 2 != 0) suppression_window_ri++;
+    if (selection_window_ti % 2 != 0) selection_window_ti++;
+    if (selection_window_ti % 2 != 0) selection_window_ti++;
+    for (s32 iteration = 0; iteration < peaks_to_find; iteration++)
     {
+        // Extract max
+        s32 peak_index = 0;
+        s32 peak_votes = 0;
+        for (s32 i = 0; i < bins_t*bins_r; i++)
+        {
+            if (histogram[i] > peak_votes)
+            {
+                peak_votes = histogram[i];
+                peak_index = i;
+            }
+        }
+
+        // Convert peak index to real values
+        s32 peak_ti = peak_index % bins_t;
+        s32 peak_ri = peak_index / bins_t;
+        r32 peak_t = t_min + (t_max-t_min)*peak_ti/bins_t;
+        r32 peak_r = r_min + (r_max-r_min)*peak_ri/bins_r;
+        peaks[iteration].maxima_t = peak_t;
+        peaks[iteration].maxima_r = peak_r;
+
         GDB("hough histogram",
         {
+            s32 mouse_ti = round_r32_plus((0.5f+0.5f*input.mouse.x)*bins_t);
+            s32 mouse_ri = round_r32_plus((0.5f-0.5f*input.mouse.y)*bins_r);
+
             Ortho(t_min, t_max, r_min, r_max);
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
             glPointSize(6.0f);
@@ -380,44 +418,172 @@ void asc_find_lines(
                     r32 r = r_min + (r_max-r_min)*((r32)ri/bins_r);
                     r32 t = t_min + (t_max-t_min)*((r32)ti/bins_t);
                     s32 count = histogram[ti + ri*bins_t];
-                    ColorRamp(count / (0.2f*max_vote));
+
+                    if (mouse_ti == ti && mouse_ri == ri)
+                    {
+                        glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
+                        SetTooltip("%.2f %.2f\n%d %d", t, r,
+                                   suppression_window_ti, suppression_window_ri);
+                    }
+                    else
+                    {
+                        ColorRamp(count / (0.2f*max_vote));
+                    }
                     glVertex2f(t, r);
                 }
 
                 for (s32 i = 0; i <= iteration; i++)
                 {
-                    r32 r = peaks_r[i];
-                    r32 t = peaks_t[i];
+                    Peak peak = peaks[i];
+                    r32 r = peak.maxima_r;
+                    r32 t = peak.maxima_t;
                     glColor4f(1.0f, 0.4f, 0.4f, 1.0f);
                     glVertex2f(t, r);
                 }
             }
             glEnd();
+
+            glPointSize(14.0f);
+            glBegin(GL_POINTS);
+            glVertex2f(peak_t, peak_r);
+            glEnd();
         });
 
-        // extract max
-        s32 peak_i = 0;
-        s32 peak_count = 0;
-        for (s32 i = 0; i < bins_t*bins_r; i++)
+        // Determine best fit line parameters (r, t, color, bounds)
+        #if 1
+        // Note (Simen): If we DO normalize the
+        // point coordinates, make sure that we
+        // use a UNIFORM scale. Otherwise, we
+        // will be morphing the slope of the normal.
+        float normal_x = cos(peak_t);
+        float normal_y = sin(peak_t);
+        float tangent_x = normal_y;
+        float tangent_y = -normal_x;
+
+        float normalization_factor = 1.0f / in_width;
+
+        // Compute two base points from which
+        // line distance will be measured relative to.
+        float x0, y0, x1, y1;
         {
-            if (histogram[i] > peak_count)
+            if (abs(normal_y) > abs(normal_x))
             {
-                peak_count = histogram[i];
-                peak_i = i;
+                x0 = 0.0f;
+                x1 = in_width;
+                y0 = (peak_r-x0*normal_x)/normal_y;
+                y1 = (peak_r-x1*normal_x)/normal_y;
+            }
+            else
+            {
+                y0 = 0.0f;
+                y1 = in_height;
+                x0 = (peak_r-y0*normal_y)/normal_x;
+                x1 = (peak_r-y1*normal_y)/normal_x;
             }
         }
 
+        GDB("line points",
+        {
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            static GLuint texture = 0;
+            if (!texture)
+                texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+            Ortho(-1.0f, 1.0f, 1.0f, -1.0f);
+            DrawTexture(texture, 0.3f, 0.3f, 0.3f, 1.0f);
+
+            Ortho(0.0f, in_width, in_height, 0.0f);
+            glLineWidth(4.0f);
+            BlendMode();
+            glBegin(GL_LINES);
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            glVertex2f(x0, y0);
+            glVertex2f(x1, y1);
+            glEnd();
+
+            glPointSize(4.0f);
+            BlendMode(GL_ONE, GL_ONE);
+            glBegin(GL_POINTS);
+            r32 t0 = peak_t - selection_window_t/2.0f;
+            r32 t1 = peak_t + selection_window_t/2.0f;
+            r32 r0 = peak_r - selection_window_r/2.0f;
+            r32 r1 = peak_r + selection_window_r/2.0f;
+            glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
+            for (s32 i = 0; i < vote_count; i++)
+            {
+                if (votes[i].t >= t0 &&
+                    votes[i].t <= t1 &&
+                    votes[i].r >= r0 &&
+                    votes[i].r <= r1)
+                {
+                    r32 x1 = votes[i].x1;
+                    r32 y1 = votes[i].y1;
+                    r32 x2 = votes[i].x2;
+                    r32 y2 = votes[i].y2;
+                    glVertex2f(x1, y1);
+                    glVertex2f(x2, y2);
+                }
+            }
+            glEnd();
+        });
+
+        // Note(Simen): We normalize the coordinates before
+        // computing statistical properties. This is to avoid
+        // the numerical issues related to large numbers.
+        x0 *= normalization_factor;
+        x1 *= normalization_factor;
+        y0 *= normalization_factor;
+        y1 *= normalization_factor;
+
+        #if 0
+        // Note(Simen): Estimate dominant color of the line
+        // by sampling input points along the best fit line.
+        float color_r, color_g, color_b;
+        {
+            int32_t color_samples = 32;
+            float sum_color_r = 0.0f;
+            float sum_color_g = 0.0f;
+            float sum_color_b = 0.0f;
+            float dl = 1.0f / color_samples;
+            for (int32_t i = 0; i < color_samples; i++)
+            {
+                float l = l0 + (l1-l0)*i*dl;
+                float x_ndc = x0 + tangent_x*l;
+                float y_ndc = y0 + tangent_y*l;
+                int32_t x_rgb = asci_round_positive(x_ndc / normalization_factor);
+                int32_t y_rgb = asci_round_positive(y_ndc / normalization_factor);
+                x_rgb = asci_clamp_s32(x_rgb, 0, in_width-1);
+                y_rgb = asci_clamp_s32(y_rgb, 0, in_height-1);
+                uint8_t *rgb_pixel = &in_rgb[(x_rgb+y_rgb*in_width)*3];
+                sum_color_r += rgb_pixel[0] / 255.0f;
+                sum_color_g += rgb_pixel[1] / 255.0f;
+                sum_color_b += rgb_pixel[2] / 255.0f;
+            }
+            color_r = sum_color_r / color_samples;
+            color_g = sum_color_g / color_samples;
+            color_b = sum_color_b / color_samples;
+        }
+
+        asc_Line line = {0};
+        line.t = t;
+        line.r = r;
+        line.x_min = (x0 + tangent_x * l0) / normalization_factor;
+        line.x_max = (x0 + tangent_x * l1) / normalization_factor;
+        line.y_min = (y0 + tangent_y * l0) / normalization_factor;
+        line.y_max = (y0 + tangent_y * l1) / normalization_factor;
+        line.color_r = color_r;
+        line.color_g = color_g;
+        line.color_b = color_b;
+        final_lines[final_lines_count++] = line;
+        #endif
+        #endif
+
         // suppress neighborhood
-        s32 max_ti = peak_i % bins_t;
-        s32 max_ri = peak_i / bins_t;
-        peaks_t[iteration] = t_min + (t_max-t_min)*max_ti/bins_t;
-        peaks_r[iteration] = r_min + (r_max-r_min)*max_ri/bins_r;
-        s32 ti0 = clamp_s32(max_ti - 16, 0, bins_t);
-        s32 ti1 = clamp_s32(max_ti + 16, 0, bins_t);
-        s32 ri0 = clamp_s32(max_ri - 16, 0, bins_r);
-        s32 ri1 = clamp_s32(max_ri + 16, 0, bins_r);
-        for (s32 ti = ti0; ti < ti1; ti++)
-        for (s32 ri = ri0; ri < ri1; ri++)
+        s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
+        s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
+        s32 ri0 = clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
+        s32 ri1 = clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
+        for (s32 ti = ti0; ti <= ti1; ti++)
+        for (s32 ri = ri0; ri <= ri1; ri++)
         {
             histogram[ti + ri*bins_t] = 0;
         }
