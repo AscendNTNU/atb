@@ -340,6 +340,91 @@ void asc_find_lines(
         &t_min, &t_max,
         &r_min, &r_max);
 
+    #if 1
+    const s32 bins_t = 64;
+    const s32 bins_r = 64;
+    s32 max_vote = 0;
+    s32 histogram[bins_t*bins_r];
+    for (s32 i = 0; i < bins_t*bins_r; i++)
+        histogram[i] = 0;
+    for (s32 i = 0; i < vote_count; i++)
+    {
+        r32 t = votes[i].t;
+        r32 r = votes[i].r;
+        s32 ti = clamp_s32(bins_t*(t-t_min)/(t_max-t_min), 0, bins_t-1);
+        s32 ri = clamp_s32(bins_r*(r-r_min)/(r_max-r_min), 0, bins_r-1);
+        histogram[ti + ri*bins_t]++;
+        if (histogram[ti + ri*bins_t] > max_vote)
+            max_vote = histogram[ti + ri*bins_t];
+    }
+
+    const s32 peaks_to_extract = 8;
+    r32 peaks_t[peaks_to_extract];
+    r32 peaks_r[peaks_to_extract];
+    r32 suppression_window_t = 20.0f * ASCI_PI / 180.0f;
+    r32 suppression_window_r = 400.0f;
+    r32 selection_window_t = 10.0f * ASCI_PI / 180.0f;
+    r32 selection_window_r = 200.0f;
+    for (s32 iteration = 0; iteration < peaks_to_extract; iteration++)
+    {
+        GDB("hough histogram",
+        {
+            Ortho(t_min, t_max, r_min, r_max);
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            glPointSize(6.0f);
+            glBegin(GL_POINTS);
+            {
+                for (s32 ri = 0; ri < bins_r; ri++)
+                for (s32 ti = 0; ti < bins_t; ti++)
+                {
+                    r32 r = r_min + (r_max-r_min)*((r32)ri/bins_r);
+                    r32 t = t_min + (t_max-t_min)*((r32)ti/bins_t);
+                    s32 count = histogram[ti + ri*bins_t];
+                    ColorRamp(count / (0.2f*max_vote));
+                    glVertex2f(t, r);
+                }
+
+                for (s32 i = 0; i <= iteration; i++)
+                {
+                    r32 r = peaks_r[i];
+                    r32 t = peaks_t[i];
+                    glColor4f(1.0f, 0.4f, 0.4f, 1.0f);
+                    glVertex2f(t, r);
+                }
+            }
+            glEnd();
+        });
+
+        // extract max
+        s32 peak_i = 0;
+        s32 peak_count = 0;
+        for (s32 i = 0; i < bins_t*bins_r; i++)
+        {
+            if (histogram[i] > peak_count)
+            {
+                peak_count = histogram[i];
+                peak_i = i;
+            }
+        }
+
+        // suppress neighborhood
+        s32 max_ti = peak_i % bins_t;
+        s32 max_ri = peak_i / bins_t;
+        peaks_t[iteration] = t_min + (t_max-t_min)*max_ti/bins_t;
+        peaks_r[iteration] = r_min + (r_max-r_min)*max_ri/bins_r;
+        s32 ti0 = clamp_s32(max_ti - 16, 0, bins_t);
+        s32 ti1 = clamp_s32(max_ti + 16, 0, bins_t);
+        s32 ri0 = clamp_s32(max_ri - 16, 0, bins_r);
+        s32 ri1 = clamp_s32(max_ri + 16, 0, bins_r);
+        for (s32 ti = ti0; ti < ti1; ti++)
+        for (s32 ri = ri0; ri < ri1; ri++)
+        {
+            histogram[ti + ri*bins_t] = 0;
+        }
+    }
+    #endif
+
+    #if 0
     int32_t quad_count_t = 1 + (int32_t)((t_max - t_min) / cluster_size_t);
     int32_t quad_count_r = 1 + (int32_t)((r_max - r_min) / cluster_size_r);
 
@@ -773,6 +858,7 @@ void asc_find_lines(
     free(quads_swap);
     *out_lines = final_lines;
     *out_count = final_lines_count;
+    #endif
 }
 
 #endif
