@@ -284,6 +284,145 @@ struct asci_Quad
     bool merged;
 };
 
+void asci_line_ransac(
+    asci_Vote *in_votes,
+    int32_t in_count,
+    int32_t iterations,
+    float inlier_threshold,
+    asci_Feature *out_features,
+    int32_t *out_count)
+{
+    // TODO: Test how it works if being an inlier implies
+    // that BOTH of a vote's source coordinates are within
+    // the threshold?
+
+    int32_t best_sample_index = 0;
+    int32_t best_inlier_count = 0;
+    for (int32_t i = 0; i < iterations; i++)
+    {
+        int32_t sample_index = asci_xor128() % in_count;
+        asci_Vote sample = in_votes[sample_index];
+
+        float normal_x = cos(sample.t);
+        float normal_y = sin(sample.t);
+        int32_t inlier_count = 0;
+        for (int32_t j = 0; j < in_count; j++)
+        {
+            asci_Vote test_vote = in_votes[j];
+            float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - sample.r;
+            if (dist1 < inlier_threshold)
+                inlier_count++;
+
+            float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - sample.r;
+            if (dist2 < inlier_threshold)
+                inlier_count++;
+        }
+
+        bool best_so_far = false;
+        if (inlier_count > best_inlier_count)
+        {
+            best_sample_index = sample_index;
+            best_inlier_count = inlier_count;
+            best_so_far = true;
+        }
+
+        GDB("inliers",
+        {
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            Ortho(0.0f, 1280.0f, 720.0f, 0.0f);
+
+            glPointSize(4.0f);
+            BlendMode(GL_ONE, GL_ONE);
+            glBegin(GL_POINTS);
+            glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
+            for (int32_t j = 0; j < in_count; j++)
+            {
+                asci_Vote test_vote = in_votes[j];
+                float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - sample.r;
+                if (abs(dist1) < inlier_threshold)
+                    glVertex2f(test_vote.x1, test_vote.y1);
+
+                float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - sample.r;
+                if (abs(dist2) < inlier_threshold)
+                    glVertex2f(test_vote.x2, test_vote.y2);
+            }
+            glEnd();
+            glColor4f(1.0f, 0.3f, 0.3f, 1.0f);
+            glPointSize(8.0f);
+            BlendMode();
+            glBegin(GL_POINTS);
+            glVertex2f(sample.x1, sample.y1);
+            glVertex2f(sample.x2, sample.y2);
+            glEnd();
+
+            if (best_so_far)
+                SetTooltip("Best so far");
+        });
+    }
+
+    #if 0
+    float normal_x = cos(line_t);
+    float normal_y = sin(line_t);
+    int32_t count = 0;
+    for (int32_t j = 0; j < in_count; j++)
+    {
+        asci_Vote test_vote = in_votes[j];
+        float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - line_r;
+        if (abs(dist1) < inlier_threshold)
+        {
+            out_features[count].x = test_vote.x1;
+            out_features[count].y = test_vote.y1;
+            count++;
+        }
+
+        float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - line_r;
+        if (abs(dist2) < inlier_threshold)
+        {
+            out_features[count].x = test_vote.x2;
+            out_features[count].y = test_vote.y2;
+            count++;
+        }
+    }
+    *out_count = count;
+    #else
+    asci_Vote sample = in_votes[best_sample_index];
+    float normal_x = cos(sample.t);
+    float normal_y = sin(sample.t);
+    int32_t count = 0;
+    for (int32_t j = 0; j < in_count; j++)
+    {
+        asci_Vote test_vote = in_votes[j];
+        float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - sample.r;
+        if (abs(dist1) < inlier_threshold)
+        {
+            out_features[count].x = test_vote.x1;
+            out_features[count].y = test_vote.y1;
+            count++;
+        }
+
+        float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - sample.r;
+        if (abs(dist2) < inlier_threshold)
+        {
+            out_features[count].x = test_vote.x2;
+            out_features[count].y = test_vote.y2;
+            count++;
+        }
+    }
+    *out_count = count;
+    #endif
+}
+
+void asci_ransac2(
+    asci_Vote *in_votes,
+    int32_t in_count,
+    int32_t iterations,
+    float inlier_threshold,
+    float *out_t,
+    float *out_r)
+{
+
+}
+
 void asc_find_lines(
     uint8_t  *in_rgb,
     uint8_t  *in_gray,
@@ -457,34 +596,36 @@ void asc_find_lines(
         float line_t = peak_t;
         float line_r = peak_r;
 
-        for (int32_t ransac_iteration = 0;
-             ransac_iteration < 4;
-             ransac_iteration++)
+        // TODO: Extract features instead...???
+        // Extract features in the selection window about (peak_t,peak_r)
+        static asci_Vote subvotes[4096*8];
+        int32_t subcount = 0;
         {
-            r32 t_sum = 0.0f;
-            r32 r_sum = 0.0f;
             r32 t0 = line_t - selection_window_t/2.0f;
             r32 t1 = line_t + selection_window_t/2.0f;
             r32 r0 = line_r - selection_window_r/2.0f;
             r32 r1 = line_r + selection_window_r/2.0f;
-            s32 count = 0;
-            for (s32 vote_index = 0;
-                 vote_index < vote_count;
-                 vote_index++)
+            for (s32 vote_index = 0; vote_index < vote_count; vote_index++)
             {
                 r32 r = votes[vote_index].r;
                 r32 t = votes[vote_index].t;
                 if (t >= t0 && t <= t1 && r >= r0 && r <= r1)
-                {
-                    t_sum += t;
-                    r_sum += r;
-                    count++;
-                }
+                    subvotes[subcount++] = votes[vote_index];
             }
-
-            line_t = t_sum / count;
-            line_r = r_sum / count;
         }
+
+        static asci_Feature inlier_features[4096*8*2];
+        int32_t inlier_count = 0;
+        asci_line_ransac(
+            subvotes,
+            subcount,
+            17,
+            10.0f,
+            inlier_features,
+            &inlier_count);
+
+        #if 1
+        #else
 
         // Note (Simen): If we DO normalize the
         // point coordinates, make sure that we
@@ -568,6 +709,8 @@ void asc_find_lines(
         x1 *= normalization_factor;
         y0 *= normalization_factor;
         y1 *= normalization_factor;
+
+        #endif
 
         #if 0
         // Note(Simen): Estimate dominant color of the line
