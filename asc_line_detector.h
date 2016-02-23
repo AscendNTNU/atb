@@ -324,7 +324,7 @@ void asc_find_lines(
         glEnd();
     });
 
-    const int32_t sample_count = 4096*2;
+    const int32_t sample_count = 4096*4;
     static asci_Vote votes[sample_count];
     int32_t vote_count = 0;
     float t_min = 0.0f;
@@ -341,8 +341,8 @@ void asc_find_lines(
         &r_min, &r_max);
 
     #if 1
-    const s32 bins_t = 64;
-    const s32 bins_r = 64;
+    const s32 bins_t = 32;
+    const s32 bins_r = 32;
     s32 max_vote = 0;
     s32 histogram[bins_t*bins_r];
     for (s32 i = 0; i < bins_t*bins_r; i++)
@@ -366,10 +366,10 @@ void asc_find_lines(
     };
     const s32 peaks_to_find = 8;
     Peak peaks[peaks_to_find];
-    r32 suppression_window_t = 10.0f * ASCI_PI / 180.0f;
-    r32 suppression_window_r = 200.0f;
-    r32 selection_window_t = 10.0f * ASCI_PI / 180.0f;
-    r32 selection_window_r = 200.0f;
+    r32 suppression_window_t = 40.0f * ASCI_PI / 180.0f;
+    r32 suppression_window_r = 600.0f;
+    r32 selection_window_t = 5.0f * ASCI_PI / 180.0f;
+    r32 selection_window_r = 100.0f;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
     s32 suppression_window_ti = round_r32_plus(suppression_window_t / bin_size_t);
@@ -450,13 +450,48 @@ void asc_find_lines(
         });
 
         // Determine best fit line parameters (r, t, color, bounds)
+        // The RANSAC algorithm is a robust method for fitting
+        // models to data sets with many outliers.
         #if 1
+
+        float line_t = peak_t;
+        float line_r = peak_r;
+
+        for (int32_t ransac_iteration = 0;
+             ransac_iteration < 4;
+             ransac_iteration++)
+        {
+            r32 t_sum = 0.0f;
+            r32 r_sum = 0.0f;
+            r32 t0 = line_t - selection_window_t/2.0f;
+            r32 t1 = line_t + selection_window_t/2.0f;
+            r32 r0 = line_r - selection_window_r/2.0f;
+            r32 r1 = line_r + selection_window_r/2.0f;
+            s32 count = 0;
+            for (s32 vote_index = 0;
+                 vote_index < vote_count;
+                 vote_index++)
+            {
+                r32 r = votes[vote_index].r;
+                r32 t = votes[vote_index].t;
+                if (t >= t0 && t <= t1 && r >= r0 && r <= r1)
+                {
+                    t_sum += t;
+                    r_sum += r;
+                    count++;
+                }
+            }
+
+            line_t = t_sum / count;
+            line_r = r_sum / count;
+        }
+
         // Note (Simen): If we DO normalize the
         // point coordinates, make sure that we
         // use a UNIFORM scale. Otherwise, we
         // will be morphing the slope of the normal.
-        float normal_x = cos(peak_t);
-        float normal_y = sin(peak_t);
+        float normal_x = cos(line_t);
+        float normal_y = sin(line_t);
         float tangent_x = normal_y;
         float tangent_y = -normal_x;
 
@@ -470,15 +505,15 @@ void asc_find_lines(
             {
                 x0 = 0.0f;
                 x1 = in_width;
-                y0 = (peak_r-x0*normal_x)/normal_y;
-                y1 = (peak_r-x1*normal_x)/normal_y;
+                y0 = (line_r-x0*normal_x)/normal_y;
+                y1 = (line_r-x1*normal_x)/normal_y;
             }
             else
             {
                 y0 = 0.0f;
                 y1 = in_height;
-                x0 = (peak_r-y0*normal_y)/normal_x;
-                x1 = (peak_r-y1*normal_y)/normal_x;
+                x0 = (line_r-y0*normal_y)/normal_x;
+                x1 = (line_r-y1*normal_y)/normal_x;
             }
         }
 
@@ -503,10 +538,10 @@ void asc_find_lines(
             glPointSize(4.0f);
             BlendMode(GL_ONE, GL_ONE);
             glBegin(GL_POINTS);
-            r32 t0 = peak_t - selection_window_t/2.0f;
-            r32 t1 = peak_t + selection_window_t/2.0f;
-            r32 r0 = peak_r - selection_window_r/2.0f;
-            r32 r1 = peak_r + selection_window_r/2.0f;
+            r32 t0 = line_t - selection_window_t/2.0f;
+            r32 t1 = line_t + selection_window_t/2.0f;
+            r32 r0 = line_r - selection_window_r/2.0f;
+            r32 r1 = line_r + selection_window_r/2.0f;
             glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
             for (s32 i = 0; i < vote_count; i++)
             {
