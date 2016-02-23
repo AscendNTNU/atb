@@ -161,6 +161,9 @@ void asci_sobel(
                 asci_Feature feature = {0};
                 feature.x = x;
                 feature.y = y;
+                // abs insane
+                // feature.x = 4 * (x / 4);
+                // feature.y = 4 * (y / 4);
                 feature.gx = gx;
                 feature.gy = gy;
                 feature.gg = gg;
@@ -289,138 +292,96 @@ void asci_line_ransac(
     int32_t in_count,
     int32_t iterations,
     float inlier_threshold,
-    asci_Feature *out_features,
-    int32_t *out_count)
+    float *out_t,
+    float *out_r)
 {
-    // TODO: Test how it works if being an inlier implies
-    // that BOTH of a vote's source coordinates are within
-    // the threshold?
+    // compute initial estimate
+    float r_hat = 0.0f;
+    float t_hat = 0.0f;
+    for (int32_t s = 0; s < in_count; s++)
+    {
+        asci_Vote vote = in_votes[s];
+        r_hat += vote.r;
+        t_hat += vote.t;
+    }
+    r_hat /= (float)in_count;
+    t_hat /= (float)in_count;
 
-    int32_t best_sample_index = 0;
-    int32_t best_inlier_count = 0;
     for (int32_t i = 0; i < iterations; i++)
     {
-        int32_t sample_index = asci_xor128() % in_count;
-        asci_Vote sample = in_votes[sample_index];
-
-        float normal_x = cos(sample.t);
-        float normal_y = sin(sample.t);
-        int32_t inlier_count = 0;
-        for (int32_t j = 0; j < in_count; j++)
+        float normal_x = cos(t_hat);
+        float normal_y = sin(t_hat);
+        float new_r = 0.0f;
+        float new_t = 0.0f;
+        int32_t inliers = 0;
+        for (int32_t s = 0; s < in_count; s++)
         {
-            asci_Vote test_vote = in_votes[j];
-            float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - sample.r;
-            if (dist1 < inlier_threshold)
-                inlier_count++;
-
-            float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - sample.r;
-            if (dist2 < inlier_threshold)
-                inlier_count++;
+            asci_Vote vote = in_votes[s];
+            float dist1 = vote.x1*normal_x+vote.y1*normal_y-r_hat;
+            float dist2 = vote.x2*normal_x+vote.y2*normal_y-r_hat;
+            if (abs(dist1) + abs(dist2) < inlier_threshold)
+            {
+                new_r += vote.r;
+                new_t += vote.t;
+                inliers++;
+            }
         }
+        new_r /= (float)inliers;
+        new_t /= (float)inliers;
 
-        bool best_so_far = false;
-        if (inlier_count > best_inlier_count)
+        r_hat = new_r;
+        t_hat = new_t;
+
+        // Compute two base points from which
+        // line distance will be measured relative to.
+        float x0, y0, x1, y1;
         {
-            best_sample_index = sample_index;
-            best_inlier_count = inlier_count;
-            best_so_far = true;
+            if (abs(normal_y) > abs(normal_x))
+            {
+                x0 = 0.0f;
+                x1 = 1280.0f;
+                y0 = (r_hat-x0*normal_x)/normal_y;
+                y1 = (r_hat-x1*normal_x)/normal_y;
+            }
+            else
+            {
+                y0 = 0.0f;
+                y1 = 720.0f;
+                x0 = (r_hat-y0*normal_y)/normal_x;
+                x1 = (r_hat-y1*normal_y)/normal_x;
+            }
         }
 
         GDB("inliers",
         {
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
             Ortho(0.0f, 1280.0f, 720.0f, 0.0f);
+            BlendMode();
+            glBegin(GL_LINES);
+            glVertex2f(x0, y0);
+            glVertex2f(x1, y1);
+            glEnd();
 
             glPointSize(4.0f);
             BlendMode(GL_ONE, GL_ONE);
             glBegin(GL_POINTS);
             glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
-            for (int32_t j = 0; j < in_count; j++)
+            for (int32_t s = 0; s < in_count; s++)
             {
-                asci_Vote test_vote = in_votes[j];
-                float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - sample.r;
-                if (abs(dist1) < inlier_threshold)
-                    glVertex2f(test_vote.x1, test_vote.y1);
-
-                float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - sample.r;
-                if (abs(dist2) < inlier_threshold)
-                    glVertex2f(test_vote.x2, test_vote.y2);
+                asci_Vote vote = in_votes[s];
+                float dist1 = vote.x1*normal_x+vote.y1*normal_y-r_hat;
+                float dist2 = vote.x2*normal_x+vote.y2*normal_y-r_hat;
+                if (abs(dist1) + abs(dist2) < inlier_threshold)
+                {
+                    glVertex2f(vote.x1, vote.y1);
+                    glVertex2f(vote.x2, vote.y2);
+                }
             }
             glEnd();
             glColor4f(1.0f, 0.3f, 0.3f, 1.0f);
-            glPointSize(8.0f);
-            BlendMode();
-            glBegin(GL_POINTS);
-            glVertex2f(sample.x1, sample.y1);
-            glVertex2f(sample.x2, sample.y2);
-            glEnd();
-
-            if (best_so_far)
-                SetTooltip("Best so far");
+            glLineWidth(4.0f);
         });
     }
-
-    #if 0
-    float normal_x = cos(line_t);
-    float normal_y = sin(line_t);
-    int32_t count = 0;
-    for (int32_t j = 0; j < in_count; j++)
-    {
-        asci_Vote test_vote = in_votes[j];
-        float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - line_r;
-        if (abs(dist1) < inlier_threshold)
-        {
-            out_features[count].x = test_vote.x1;
-            out_features[count].y = test_vote.y1;
-            count++;
-        }
-
-        float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - line_r;
-        if (abs(dist2) < inlier_threshold)
-        {
-            out_features[count].x = test_vote.x2;
-            out_features[count].y = test_vote.y2;
-            count++;
-        }
-    }
-    *out_count = count;
-    #else
-    asci_Vote sample = in_votes[best_sample_index];
-    float normal_x = cos(sample.t);
-    float normal_y = sin(sample.t);
-    int32_t count = 0;
-    for (int32_t j = 0; j < in_count; j++)
-    {
-        asci_Vote test_vote = in_votes[j];
-        float dist1 = test_vote.x1*normal_x + test_vote.y1*normal_y - sample.r;
-        if (abs(dist1) < inlier_threshold)
-        {
-            out_features[count].x = test_vote.x1;
-            out_features[count].y = test_vote.y1;
-            count++;
-        }
-
-        float dist2 = test_vote.x2*normal_x + test_vote.y2*normal_y - sample.r;
-        if (abs(dist2) < inlier_threshold)
-        {
-            out_features[count].x = test_vote.x2;
-            out_features[count].y = test_vote.y2;
-            count++;
-        }
-    }
-    *out_count = count;
-    #endif
-}
-
-void asci_ransac2(
-    asci_Vote *in_votes,
-    int32_t in_count,
-    int32_t iterations,
-    float inlier_threshold,
-    float *out_t,
-    float *out_r)
-{
-
 }
 
 void asc_find_lines(
@@ -480,8 +441,8 @@ void asc_find_lines(
         &r_min, &r_max);
 
     #if 1
-    const s32 bins_t = 32;
-    const s32 bins_r = 32;
+    const s32 bins_t = 128;
+    const s32 bins_r = 128;
     s32 max_vote = 0;
     s32 histogram[bins_t*bins_r];
     for (s32 i = 0; i < bins_t*bins_r; i++)
@@ -505,9 +466,9 @@ void asc_find_lines(
     };
     const s32 peaks_to_find = 8;
     Peak peaks[peaks_to_find];
-    r32 suppression_window_t = 40.0f * ASCI_PI / 180.0f;
-    r32 suppression_window_r = 600.0f;
-    r32 selection_window_t = 5.0f * ASCI_PI / 180.0f;
+    r32 suppression_window_t = 10.0f * ASCI_PI / 180.0f;
+    r32 suppression_window_r = 100.0f;
+    r32 selection_window_t = 10.0f * ASCI_PI / 180.0f;
     r32 selection_window_r = 100.0f;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
@@ -593,18 +554,15 @@ void asc_find_lines(
         // models to data sets with many outliers.
         #if 1
 
-        float line_t = peak_t;
-        float line_r = peak_r;
-
         // TODO: Extract features instead...???
         // Extract features in the selection window about (peak_t,peak_r)
-        static asci_Vote subvotes[4096*8];
+        static asci_Vote subvotes[sample_count];
         int32_t subcount = 0;
         {
-            r32 t0 = line_t - selection_window_t/2.0f;
-            r32 t1 = line_t + selection_window_t/2.0f;
-            r32 r0 = line_r - selection_window_r/2.0f;
-            r32 r1 = line_r + selection_window_r/2.0f;
+            r32 t0 = peak_t - selection_window_t/2.0f;
+            r32 t1 = peak_t + selection_window_t/2.0f;
+            r32 r0 = peak_r - selection_window_r/2.0f;
+            r32 r1 = peak_r + selection_window_r/2.0f;
             for (s32 vote_index = 0; vote_index < vote_count; vote_index++)
             {
                 r32 r = votes[vote_index].r;
@@ -614,15 +572,15 @@ void asc_find_lines(
             }
         }
 
-        static asci_Feature inlier_features[4096*8*2];
-        int32_t inlier_count = 0;
+        float line_t = peak_t;
+        float line_r = peak_r;
         asci_line_ransac(
             subvotes,
             subcount,
-            17,
-            10.0f,
-            inlier_features,
-            &inlier_count);
+            8,
+            30.0f,
+            &line_t,
+            &line_r);
 
         #if 1
         #else
@@ -657,50 +615,6 @@ void asc_find_lines(
                 x1 = (line_r-y1*normal_y)/normal_x;
             }
         }
-
-        GDB("line points",
-        {
-            Clear(0.0f, 0.0f, 0.0f, 1.0f);
-            static GLuint texture = 0;
-            if (!texture)
-                texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
-            Ortho(-1.0f, 1.0f, 1.0f, -1.0f);
-            DrawTexture(texture, 0.3f, 0.3f, 0.3f, 1.0f);
-
-            Ortho(0.0f, in_width, in_height, 0.0f);
-            glLineWidth(4.0f);
-            BlendMode();
-            glBegin(GL_LINES);
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-            glVertex2f(x0, y0);
-            glVertex2f(x1, y1);
-            glEnd();
-
-            glPointSize(4.0f);
-            BlendMode(GL_ONE, GL_ONE);
-            glBegin(GL_POINTS);
-            r32 t0 = line_t - selection_window_t/2.0f;
-            r32 t1 = line_t + selection_window_t/2.0f;
-            r32 r0 = line_r - selection_window_r/2.0f;
-            r32 r1 = line_r + selection_window_r/2.0f;
-            glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
-            for (s32 i = 0; i < vote_count; i++)
-            {
-                if (votes[i].t >= t0 &&
-                    votes[i].t <= t1 &&
-                    votes[i].r >= r0 &&
-                    votes[i].r <= r1)
-                {
-                    r32 x1 = votes[i].x1;
-                    r32 y1 = votes[i].y1;
-                    r32 x2 = votes[i].x2;
-                    r32 y2 = votes[i].y2;
-                    glVertex2f(x1, y1);
-                    glVertex2f(x2, y2);
-                }
-            }
-            glEnd();
-        });
 
         // Note(Simen): We normalize the coordinates before
         // computing statistical properties. This is to avoid
