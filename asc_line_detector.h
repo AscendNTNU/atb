@@ -161,9 +161,6 @@ void asci_sobel(
                 asci_Feature feature = {0};
                 feature.x = x;
                 feature.y = y;
-                // abs insane
-                // feature.x = 4 * (x / 4);
-                // feature.y = 4 * (y / 4);
                 feature.gx = gx;
                 feature.gy = gy;
                 feature.gg = gg;
@@ -208,6 +205,10 @@ struct asci_Vote
     int32_t y1;
     int32_t x2;
     int32_t y2;
+    int16_t gx1;
+    int16_t gy1;
+    int16_t gx2;
+    int16_t gy2;
     float r;
     float t;
 };
@@ -240,7 +241,7 @@ void asci_hough(
         if (f1.gg > 0 && f2.gg > 0)
         {
             float g_distance = abs((float)(f1.gx*f2.gx+f1.gy*f2.gy)/(float)(f1.gg*f2.gg));
-            if (g_distance > 0.75f)
+            if (g_distance > 0.6f)
             {
                 continue;
             }
@@ -264,6 +265,10 @@ void asci_hough(
         vote.y1 = f1.y;
         vote.x2 = f2.x;
         vote.y2 = f2.y;
+        vote.gx1 = f1.gx;
+        vote.gy1 = f1.gy;
+        vote.gx2 = f2.gx;
+        vote.gy2 = f2.gy;
         out_votes[count++] = vote;
     }
 
@@ -317,9 +322,19 @@ void asci_line_ransac(
         for (int32_t s = 0; s < in_count; s++)
         {
             asci_Vote vote = in_votes[s];
-            float dist1 = vote.x1*normal_x+vote.y1*normal_y-r_hat;
-            float dist2 = vote.x2*normal_x+vote.y2*normal_y-r_hat;
+            float len1 = abs(vote.gx1)+abs(vote.gy1);
+            float dot1 = abs(vote.gx1*normal_x + vote.gy1*normal_y);
+            float thr1 = 0.45f*len1;
+
+            float len2 = abs(vote.gx2)+abs(vote.gy2);
+            float dot2 = abs(vote.gx2*normal_x + vote.gy2*normal_y);
+            float thr2 = 0.45f*len2;
+
+            float dist1 = abs(vote.x1*normal_x+vote.y1*normal_y-r_hat);
+            float dist2 = abs(vote.x2*normal_x+vote.y2*normal_y-r_hat);
             if (abs(dist1) + abs(dist2) < inlier_threshold)
+            if (dot1 >= thr1 && dot2 >= thr2 &&
+                dist1 + dist2 < inlier_threshold)
             {
                 new_r += vote.r;
                 new_t += vote.t;
@@ -357,29 +372,38 @@ void asci_line_ransac(
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
             Ortho(0.0f, 1280.0f, 720.0f, 0.0f);
             BlendMode();
+            glColor4f(1.0f, 0.3f, 0.3f, 1.0f);
+            glLineWidth(4.0f);
             glBegin(GL_LINES);
             glVertex2f(x0, y0);
             glVertex2f(x1, y1);
             glEnd();
 
-            glPointSize(4.0f);
+            static float g_threshold = 0.0f;
+            SliderFloat("threshold", &g_threshold, 0.0f, 1.0f);
+
+            glPointSize(8.0f);
             BlendMode(GL_ONE, GL_ONE);
             glBegin(GL_POINTS);
             glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
             for (int32_t s = 0; s < in_count; s++)
             {
                 asci_Vote vote = in_votes[s];
-                float dist1 = vote.x1*normal_x+vote.y1*normal_y-r_hat;
-                float dist2 = vote.x2*normal_x+vote.y2*normal_y-r_hat;
-                if (abs(dist1) + abs(dist2) < inlier_threshold)
+                float len1 = abs(vote.gx1)+abs(vote.gy1);
+                float dot1 = abs(vote.gx1*normal_x + vote.gy1*normal_y);
+                float thr1 = g_threshold*len1;
+
+                float len2 = abs(vote.gx2)+abs(vote.gy2);
+                float dot2 = abs(vote.gx2*normal_x + vote.gy2*normal_y);
+                float thr2 = g_threshold*len2;
+
+                if (dot1 >= thr1 && dot2 >= thr2)
                 {
                     glVertex2f(vote.x1, vote.y1);
                     glVertex2f(vote.x2, vote.y2);
                 }
             }
             glEnd();
-            glColor4f(1.0f, 0.3f, 0.3f, 1.0f);
-            glLineWidth(4.0f);
         });
     }
 }
@@ -424,7 +448,7 @@ void asc_find_lines(
         glEnd();
     });
 
-    const int32_t sample_count = 4096*4;
+    const int32_t sample_count = 4096;
     static asci_Vote votes[sample_count];
     int32_t vote_count = 0;
     float t_min = 0.0f;
@@ -466,10 +490,10 @@ void asc_find_lines(
     };
     const s32 peaks_to_find = 8;
     Peak peaks[peaks_to_find];
-    r32 suppression_window_t = 10.0f * ASCI_PI / 180.0f;
-    r32 suppression_window_r = 100.0f;
-    r32 selection_window_t = 10.0f * ASCI_PI / 180.0f;
-    r32 selection_window_r = 100.0f;
+    r32 suppression_window_t = 20.0f * ASCI_PI / 180.0f;
+    r32 suppression_window_r = 200.0f;
+    r32 selection_window_t = 20.0f * ASCI_PI / 180.0f;
+    r32 selection_window_r = 200.0f;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
     s32 suppression_window_ti = round_r32_plus(suppression_window_t / bin_size_t);
@@ -508,6 +532,7 @@ void asc_find_lines(
             s32 mouse_ri = round_r32_plus((0.5f-0.5f*input.mouse.y)*bins_r);
 
             Ortho(t_min, t_max, r_min, r_max);
+            BlendMode();
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
             glPointSize(6.0f);
             glBegin(GL_POINTS);
@@ -578,7 +603,7 @@ void asc_find_lines(
             subvotes,
             subcount,
             8,
-            30.0f,
+            80.0f,
             &line_t,
             &line_r);
 
