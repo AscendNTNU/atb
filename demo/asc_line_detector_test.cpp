@@ -1,13 +1,15 @@
 #define ASC_LINE_DETECTOR_IMPLEMENTATION
 #define ASC_LINE_DETECTOR_SSE
-#include "asc_line_detector.h"
+#include "../asc_line_detector.h"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "external/stb_image.h"
+#include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "external/stb_image_write.h"
+#include "stb_image_write.h"
 
 #include <stdio.h>
+#define GDB_NO_STB_IMAGE_WRITE
+#include <gdb.cpp>
 
 unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
 {
@@ -30,10 +32,10 @@ unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
     return out;
 }
 
-int main()
+int main(int argc, char **argv)
 {
     int width, height, channels;
-    unsigned char *input_rgb = stbi_load("C:/Downloads/temp/video2/video0036.jpg", &width, &height, &channels, 3);
+    unsigned char *input_rgb = stbi_load("data/video0040.jpg", &width, &height, &channels, 3);
     unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
 
     asc_Line *lines = 0;
@@ -53,4 +55,8 @@ int main()
         printf("%d: x0=%.2f y0=%.2f x1=%.2f y1=%.2f\n",
                i, line.x_min, line.y_min, line.x_max, line.y_max);
     }
+
+    stbi_image_free(input_rgb);
+    free(input_gray);
+    return 0;
 }
