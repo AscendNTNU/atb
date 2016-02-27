@@ -228,14 +228,14 @@ struct asci_Vote
 
 void asci_hough(
     asci_Feature *in_features,
-    s32       in_feature_count,
-    s32       sample_count,
-    asci_Vote    *out_votes,
-    s32      *out_count,
-    r32        *out_t_min,
-    r32        *out_t_max,
-    r32        *out_r_min,
-    r32        *out_r_max)
+    s32 in_feature_count,
+    s32 sample_count,
+    asci_Vote *out_votes,
+    s32 *out_count,
+    r32 *out_t_min,
+    r32 *out_t_max,
+    r32 *out_r_min,
+    r32 *out_r_max)
 {
     r32 t_min = ASCI_FLT_MAX;
     r32 t_max = -ASCI_FLT_MAX;
@@ -250,11 +250,12 @@ void asci_hough(
         asci_Feature f1 = in_features[sample_i1];
         asci_Feature f2 = in_features[sample_i2];
 
-        // Reject samples whose edge directions differ greatly
+        // Note(Simen): I reject a vote if the gradients of
+        // the drawn samples differ more than a threshold.
         if (f1.gg > 0 && f2.gg > 0)
         {
-            r32 g_distance = abs((r32)(f1.gx*f2.gx+f1.gy*f2.gy)/(r32)(f1.gg*f2.gg));
-            if (g_distance < 0.5f)
+            r32 dot = f1.gx*f2.gx + f1.gy*f2.gy;
+            if (abs(dot) < 0.5f*f1.gg*f2.gg)
             {
                 continue;
             }
@@ -264,8 +265,23 @@ void asci_hough(
         r32 t = atan((r32)dy / (r32)dx) + ASCI_PI / 2.0f;
         r32 c = cos(t);
         r32 s = sin(t);
-        r32 r = f1.x*c + f1.y*s;
 
+        // Note(Simen): I also reject a vote if the normal of
+        // the line drawn between the samples differs from the
+        // gradients of the samples by more than a threshold.
+        if (f1.gg > 0 && f2.gg > 0)
+        {
+            r32 dot1 = (f1.gx*c+f1.gy*s) / f1.gg;
+            r32 dot2 = (f2.gx*c+f2.gy*s) / f2.gg;
+            r32 adot = 0.5f*(abs(dot1) + abs(dot2));
+            if (adot < 0.5f)
+            {
+                continue;
+            }
+
+        }
+
+        r32 r = f1.x*c + f1.y*s;
         if (r < r_min) r_min = r;
         if (r > r_max) r_max = r;
         if (t < t_min) t_min = t;
@@ -293,16 +309,16 @@ void asci_hough(
 }
 
 void asc_find_lines(
-    u08  *in_rgb,
-    u08  *in_gray,
-    s32   in_width,
-    s32   in_height,
+    u08 *in_rgb,
+    u08 *in_gray,
+    s32 in_width,
+    s32 in_height,
     asc_Line **out_lines,
-    s32  *out_count,
-    s16   sobel_threshold,
-    s32   cluster_iterations,
-    r32     cluster_size_t,
-    r32     cluster_size_r)
+    s32 *out_count,
+    s16 sobel_threshold,
+    s32 cluster_iterations,
+    r32 cluster_size_t,
+    r32 cluster_size_r)
 {
     // TODO: This can be a static array. Let the user define max
     // dimensions for the image, and provide default sizes.
@@ -357,8 +373,8 @@ void asc_find_lines(
         r32 weight;
     };
 
-    const s32 bins_t = 48;
-    const s32 bins_r = 48;
+    const s32 bins_t = 32;
+    const s32 bins_r = 32;
     static HoughCell histogram[bins_r*bins_t];
     for (s32 i = 0; i < bins_r*bins_t; i++)
     {
@@ -370,7 +386,6 @@ void asc_find_lines(
     r32 histogram_max_weight = 0.0f;
     for (s32 vote_index = 0; vote_index < vote_count; vote_index++)
     {
-        // TODO: Bilinear write
         asci_Vote vote = votes[vote_index];
         r32 t = vote.t;
         r32 r = vote.r;
@@ -397,9 +412,9 @@ void asc_find_lines(
     // Peak extraction
     const s32 lines_to_find = 16;
     r32 suppression_window_t = 20.0f * ASCI_PI / 180.0f;
-    r32 suppression_window_r = 200.0f;
+    r32 suppression_window_r = 300.0f;
     r32 selection_window_t = 20.0f * ASCI_PI / 180.0f;
-    r32 selection_window_r = 200.0f;
+    r32 selection_window_r = 300.0f;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
     s32 suppression_window_ti = round_r32_plus(suppression_window_t / bin_size_t);
@@ -422,6 +437,14 @@ void asc_find_lines(
                 peak_weight = histogram[i].weight;
                 peak_index = i;
             }
+        }
+
+        if (peak_weight < 0.025f*histogram_max_weight)
+        {
+            // TODO: Early exit
+            printf("Early exit at iteration %d; peak weight (%.2f) was less than threshold (%.2f)\n",
+                   iteration, peak_weight, 0.025f*histogram_max_weight);
+            break;
         }
 
         s32 peak_ti = peak_index % bins_t;
@@ -535,6 +558,38 @@ void asc_find_lines(
         });
 
         // suppress neighborhood
+        #if 1
+        // TODO: "Unroll" underflowing or oveflowing segments
+        s32 ti0 = peak_ti - suppression_window_ti/2;
+        s32 ti1 = peak_ti + suppression_window_ti/2;
+        s32 ri0 = peak_ri - suppression_window_ri/2;
+        s32 ri1 = peak_ri + suppression_window_ri/2;
+        for (s32 ti = ti0; ti <= ti1; ti++)
+        for (s32 ri = ri0; ri <= ri1; ri++)
+        {
+            s32 write_t = 0;
+            s32 write_r = 0;
+            if (ti < 0)
+            {
+                // Topographically, t=0 and t=pi are identified
+                // by gluing (0, r_min)-(0, r_max) with
+                // (pi, r_max)-(pi, r_min)
+                write_t = clamp_s32(ti+bins_t, 0, bins_t-1);
+                write_r = clamp_s32(bins_r-ri, 0, bins_r-1);
+            }
+            else if (ti >= bins_t)
+            {
+                write_t = clamp_s32(ti-bins_t, 0, bins_t-1);
+                write_r = clamp_s32(bins_r-1-ri, 0, bins_r-1);
+            }
+            else
+            {
+                write_t = clamp_s32(ti, 0, bins_t-1);
+                write_r = clamp_s32(ri, 0, bins_r-1);
+            }
+            histogram[write_t + write_r*bins_t].weight = 0.0f;
+        }
+        #else
         s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
         s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
         s32 ri0 = clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
@@ -544,6 +599,7 @@ void asc_find_lines(
         {
             histogram[ti + ri*bins_t].weight = 0.0f;
         }
+        #endif
     }
 
     free(features);
