@@ -38,7 +38,54 @@
 //
 // Changelog
 // ------------------------------------------------------------------------
-//   1.00 (10. feb 2016) Ported code to single-file header library
+//   1.1 (27. feb 2016) First public release
+//   1.0 (10. feb 2016) Ported code to single-file header library
+//
+// Parameter descriptions
+// ------------------------------------------------------------------------
+// The algorithms used have a number of cogs and levers that you
+// can modify depending on your situation. Below I have written
+// a summary of the parameters that you can specify, and how they
+// relate to the output.
+//
+// EDGE DETECTOR
+// The edge detector is a straightforward Sobel filter run on
+// every input pixel. It computes a smoothed intensity gradient.
+// The magnitude of this gradient is used to determine whether
+// a given pixel as an edge (aka a feature) or not.
+//
+// sobel_threshold
+//   A feature is kept if the magnitude of its intensity gradient
+//   is greater than or equal to this threshold. If the edges of
+//   the lines you are trying to detect are faint, you will want
+//   this to be a small value.
+//
+// HOUGH TRANSFORM
+// The particular Hough transform used is called the randomized
+// Hough transform. It works by sampling from the feature space
+// (the output from the edge detector) two features at a time,
+// and voting for the line that goes through them. You can control
+// the number of samples performed.
+//
+// hough_sample_count
+//   The randomized Hough transforms performs hough_sample_count
+//   random samples of the feature space, during the line voting
+//   process.
+//
+// PEAK EXTRACTOR
+// The peak extractor extracts plausible lines from the Hough
+// transform space. When it extracts a peak, it sets neighboring
+// votes to zero in a window. This is done to eliminate multiple
+// detections of the same line. The size of this window may be
+// specified in terms of extent in theta (radians) and extent
+// in rho (pixels).
+//
+// suppression_window_t
+//   Controls the extent of suppression of neighboring votes in
+//   theta (radians) during the peak extraction.
+// suppression_window_r
+//   Controls the extent of suppression of neighboring votes in
+//   rho (pixels) during the peak extraction.
 //
 // Licence
 // ------------------------------------------------------------------------
@@ -92,10 +139,10 @@ void asc_find_lines(
     int32_t    in_height,
     asc_Line **out_lines,
     int32_t   *out_count,
-    int16_t    param_feature_threshold = 10,
-    int32_t    param_max_ms_iterations = 32,
-    float      param_cluster_size_t = 10.0f*3.1415f/180.0f,
-    float      param_cluster_size_r = 100.0f);
+    int16_t    param_sobel_threshold = 10,
+    int32_t    param_hough_sample_count = 16384,
+    float      param_suppression_window_t = 0.349f,
+    float      param_suppression_window_r = 300.0f);
 
 // void asc_fit_grid(
 //     asc_Line *in_lines,
@@ -316,9 +363,9 @@ void asc_find_lines(
     asc_Line **out_lines,
     s32 *out_count,
     s16 sobel_threshold,
-    s32 cluster_iterations,
-    r32 cluster_size_t,
-    r32 cluster_size_r)
+    s32 sample_count,
+    r32 suppression_window_t,
+    r32 suppression_window_r)
 {
     // TODO: This can be a static array. Let the user define max
     // dimensions for the image, and provide default sizes.
@@ -350,8 +397,7 @@ void asc_find_lines(
         glEnd();
     });
 
-    const s32 sample_count = 4096*4;
-    static asci_Vote votes[sample_count];
+    asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
     s32 vote_count = 0;
     r32 t_min = 0.0f;
     r32 t_max = 0.0f;
@@ -411,20 +457,12 @@ void asc_find_lines(
 
     // Peak extraction
     const s32 lines_to_find = 16;
-    r32 suppression_window_t = 20.0f * ASCI_PI / 180.0f;
-    r32 suppression_window_r = 300.0f;
-    r32 selection_window_t = 20.0f * ASCI_PI / 180.0f;
-    r32 selection_window_r = 300.0f;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
     s32 suppression_window_ti = round_r32_plus(suppression_window_t / bin_size_t);
     s32 suppression_window_ri = round_r32_plus(suppression_window_r / bin_size_r);
-    s32 selection_window_ti = round_r32_plus(selection_window_t / bin_size_t);
-    s32 selection_window_ri = round_r32_plus(selection_window_r / bin_size_r);
     if (suppression_window_ti % 2 != 0) suppression_window_ti++;
     if (suppression_window_ri % 2 != 0) suppression_window_ri++;
-    if (selection_window_ti % 2 != 0) selection_window_ti++;
-    if (selection_window_ti % 2 != 0) selection_window_ti++;
     for (s32 iteration = 0; iteration < lines_to_find; iteration++)
     {
         // Extract max
@@ -602,6 +640,7 @@ void asc_find_lines(
         #endif
     }
 
+    free(votes);
     free(features);
 }
 
