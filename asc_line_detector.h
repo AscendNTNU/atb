@@ -433,9 +433,18 @@ void asci_hough(
                 continue;
             }
         }
-        r32 dx = (r32)(f2.x - f1.x);
-        r32 dy = (r32)(f2.y - f1.y);
-        r32 t = atan((r32)dy / (r32)dx) + ASCI_PI / 2.0f;
+
+        r32 t;
+        s32 dx = f2.x - f1.x;
+        s32 dy = f2.y - f1.y;
+        if (dx == 0)
+        {
+            t = 0.0f;
+        }
+        else
+        {
+            t = atan((r32)dy / (r32)dx) + ASCI_PI / 2.0f;
+        }
         r32 c = cos(t);
         r32 s = sin(t);
 
