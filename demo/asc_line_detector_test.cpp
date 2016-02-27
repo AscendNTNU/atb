@@ -8,8 +8,6 @@
 #include "stb_image_write.h"
 
 #include <stdio.h>
-#define GDB_NO_STB_IMAGE_WRITE
-#include <gdb.cpp>
 
 unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
 {
