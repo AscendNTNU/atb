@@ -660,14 +660,14 @@ void asc_find_lines(
                 for (s32 ri = 0; ri < bins_r; ri++)
                 for (s32 ti = 0; ti < bins_t; ti++)
                 {
-                    r32 r = histogram[ti + ri*bins_t].avg_r;
-                    r32 t = histogram[ti + ri*bins_t].avg_t;
-                    r32 count = histogram[ti + ri*bins_t].count;
+                    r32 r = r_min + (r_max-r_min)*ri/bins_r;
+                    r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                    s32 count = histogram[ti + ri*bins_t].count;
 
                     if (mouse_ti == ti && mouse_ri == ri)
                     {
                         glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
-                        SetTooltip("%.2f %.2f %.2f", t, r, count);
+                        SetTooltip("%d %d %d", ti, ri, count);
                     }
                     else
                     {
@@ -678,10 +678,47 @@ void asc_find_lines(
             }
             glEnd();
 
+            glPointSize(6.0f);
+            glBegin(GL_POINTS);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            {
+                s32 ti0 = peak_ti - suppression_window_ti/2;
+                s32 ti1 = peak_ti + suppression_window_ti/2;
+                s32 ri0 = peak_ri - suppression_window_ri/2;
+                s32 ri1 = peak_ri + suppression_window_ri/2;
+                for (s32 ti = ti0; ti <= ti1; ti++)
+                for (s32 ri = ri0; ri <= ri1; ri++)
+                {
+                    s32 write_t = 0;
+                    s32 write_r = 0;
+                    if (ti < 0)
+                    {
+                        write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
+                        write_r = asci_clamp_s32(bins_r-ri, 0, bins_r-1);
+                    }
+                    else if (ti >= bins_t)
+                    {
+                        write_t = asci_clamp_s32(ti-bins_t, 0, bins_t-1);
+                        write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+                    }
+                    else
+                    {
+                        write_t = asci_clamp_s32(ti, 0, bins_t-1);
+                        write_r = asci_clamp_s32(ri, 0, bins_r-1);
+                    }
+                    r32 r = r_min + (r_max-r_min)*write_r/bins_r;
+                    r32 t = t_min + (t_max-t_min)*write_t/bins_t;
+                    glVertex2f(t, r);
+                }
+            }
+            glEnd();
+
             glPointSize(14.0f);
             glBegin(GL_POINTS);
             glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
-            glVertex2f(peak_t, peak_r);
+            r32 r = r_min + (r_max-r_min)*peak_ri/bins_r;
+            r32 t = t_min + (t_max-t_min)*peak_ti/bins_t;
+            glVertex2f(t, r);
             glEnd();
         });
 
