@@ -78,7 +78,11 @@
 // votes to zero in a window. This is done to eliminate multiple
 // detections of the same line. The size of this window may be
 // specified in terms of extent in theta (radians) and extent
-// in rho (pixels).
+// in rho (pixels). Since the vote count of the extracted peaks
+// decrease for each line found, you can early-exit the search by
+// specifying the threshold vote count. If a peak is found with
+// a count lower than this threshold, the search exits and the peak
+// is rejected.
 //
 // suppression_window_t
 //   Controls the extent of suppression of neighboring votes in
@@ -86,6 +90,10 @@
 // suppression_window_r
 //   Controls the extent of suppression of neighboring votes in
 //   rho (pixels) during the peak extraction.
+// peak_exit_threshold
+//   Controls the minimum number of votes a peak must have to
+//   pass as a detected line. Specified as a fraction of the max
+//   count in the Hough space.
 //
 // Licence
 // ------------------------------------------------------------------------
@@ -129,9 +137,6 @@ struct asc_Line
     float color_b;
 };
 
-// TODO: Flags enabling or disabling estimation of
-// color, boundaries, etc... Fisheye correction?
-
 void asc_find_lines(
     uint8_t   *in_rgb,
     uint8_t   *in_gray,
@@ -139,33 +144,12 @@ void asc_find_lines(
     int32_t    in_height,
     asc_Line **out_lines,
     int32_t   *out_count,
+    int32_t    param_max_out_count = 16,
     int16_t    param_sobel_threshold = 10,
-    int32_t    param_hough_sample_count = 16384,
+    int32_t    param_hough_sample_count = 4096,
     float      param_suppression_window_t = 0.349f,
-    float      param_suppression_window_r = 300.0f);
-
-// void asc_fit_grid(
-//     asc_Line *in_lines,
-//     int32_t   in_count,
-//     rotation matrix, x, y, z);
-
-// TODO: I would like to implement a function exploiting
-// temporal correspondence in line detections in a video
-// stream. It would look something like this:
-//
-//   asc_find_lines_video(uint08_t **frames, int32_t frame_count, ...)
-//
-// You would call the function with a pointer to the
-// first frame in a window with 'frame_count' frames
-// leading up to the most recent,
-//
-//   frames->[frame8, frame9, frame10, frame11]
-//                                        ^ most recent
-// I.e. the resulting line detection would be the most
-// likely set of lines that exist in frame11, given the
-// last 3 frames that came before it.
-
-// asc_lines_push_frame(...)?
+    float      param_suppression_window_r = 300.0f,
+    float      param_peak_exit_threshold = 0.1f);
 
 #endif
 
@@ -190,8 +174,149 @@ struct asci_Feature
     s16 gg;
 };
 
+#ifdef ASC_LINE_DETECTOR_SSE
+#include "xmmintrin.h"
+#include "emmintrin.h"
+#include "smmintrin.h"
 void asci_sobel(
-    u08 *in_rgb,
+    u08 *in_gray,
+    s32  in_width,
+    s32  in_height,
+    s16  threshold,
+    asci_Feature *out_features,
+    s32 *out_feature_count)
+{
+    s32 count = 0;
+    for (s32 y = 1; y < in_height; y++)
+    {
+        for (s32 x = 1; x <= in_width-16; x += 16)
+        {
+            u08 *addr00 = in_gray + (y-1)*in_width + x-1;
+            u08 *addr01 = in_gray + (y-1)*in_width + x;
+            u08 *addr02 = in_gray + (y-1)*in_width + x+1;
+
+            u08 *addr10 = in_gray + (y)*in_width + x-1;
+            u08 *addr12 = in_gray + (y)*in_width + x+1;
+
+            u08 *addr20 = in_gray + (y+1)*in_width + x-1;
+            u08 *addr21 = in_gray + (y+1)*in_width + x;
+            u08 *addr22 = in_gray + (y+1)*in_width + x+1;
+
+            __m128i source00 = _mm_loadu_si128((__m128i*)addr00);
+            __m128i source01 = _mm_loadu_si128((__m128i*)addr01);
+            __m128i source02 = _mm_loadu_si128((__m128i*)addr02);
+
+            __m128i source10 = _mm_loadu_si128((__m128i*)addr10);
+            __m128i source12 = _mm_loadu_si128((__m128i*)addr12);
+
+            __m128i source20 = _mm_loadu_si128((__m128i*)addr20);
+            __m128i source21 = _mm_loadu_si128((__m128i*)addr21);
+            __m128i source22 = _mm_loadu_si128((__m128i*)addr22);
+
+            // divide pixels by 4
+
+            __m128i shift_mask = _mm_set1_epi8(0x3F);
+            source00 = _mm_and_si128(shift_mask, _mm_srli_epi16(source00, 2));
+            source01 = _mm_and_si128(shift_mask, _mm_srli_epi16(source01, 2));
+            source02 = _mm_and_si128(shift_mask, _mm_srli_epi16(source02, 2));
+
+            source10 = _mm_and_si128(shift_mask, _mm_srli_epi16(source10, 2));
+            source12 = _mm_and_si128(shift_mask, _mm_srli_epi16(source12, 2));
+
+            source20 = _mm_and_si128(shift_mask, _mm_srli_epi16(source20, 2));
+            source21 = _mm_and_si128(shift_mask, _mm_srli_epi16(source21, 2));
+            source22 = _mm_and_si128(shift_mask, _mm_srli_epi16(source22, 2));
+
+            // I compute the x and y gradients in their positive
+            // and negative components, to fit everything in u08
+            // values.
+
+            // TODO: Div only by two for source12, source10,
+            // source21 and source01.
+
+            // px
+            __m128i positive_x = _mm_set1_epi8(0);
+            positive_x = _mm_adds_epu8(positive_x, source02);
+            positive_x = _mm_adds_epu8(positive_x, source12);
+            positive_x = _mm_adds_epu8(positive_x, source12);
+            positive_x = _mm_adds_epu8(positive_x, source22);
+
+            // nx
+            __m128i negative_x = _mm_set1_epi8(0);
+            negative_x = _mm_adds_epu8(negative_x, source00);
+            negative_x = _mm_adds_epu8(negative_x, source10);
+            negative_x = _mm_adds_epu8(negative_x, source10);
+            negative_x = _mm_adds_epu8(negative_x, source20);
+
+            // py
+            __m128i positive_y = _mm_set1_epi8(0);
+            positive_y = _mm_adds_epu8(positive_y, source20);
+            positive_y = _mm_adds_epu8(positive_y, source21);
+            positive_y = _mm_adds_epu8(positive_y, source21);
+            positive_y = _mm_adds_epu8(positive_y, source22);
+
+            // ny
+            __m128i negative_y = _mm_set1_epi8(0);
+            negative_y = _mm_adds_epu8(negative_y, source00);
+            negative_y = _mm_adds_epu8(negative_y, source01);
+            negative_y = _mm_adds_epu8(negative_y, source01);
+            negative_y = _mm_adds_epu8(negative_y, source02);
+
+            // Approximate magnitude of gradient by absolute value
+
+            // x
+            __m128i abs_gx = _mm_subs_epu8(
+                _mm_max_epu8(positive_x, negative_x),
+                _mm_min_epu8(positive_x, negative_x));
+
+            // y
+            __m128i abs_gy = _mm_subs_epu16(
+                _mm_max_epu8(positive_y, negative_y),
+                _mm_min_epu8(positive_y, negative_y));
+
+            __m128i magnitude = _mm_adds_epu8(abs_gx, abs_gy);
+
+            __m128i skip_value = _mm_set1_epi8(20);
+            __m128i skip_cmp = _mm_cmplt_epi8(magnitude, skip_value);
+            int move_mask = _mm_movemask_epi8(skip_cmp);
+            if (move_mask == 0xffff)
+            {
+                continue;
+            }
+
+            u08 dst_magnitude[16];
+            u08 dst_positive_x[16];
+            u08 dst_negative_x[16];
+            u08 dst_positive_y[16];
+            u08 dst_negative_y[16];
+            _mm_storeu_si128((__m128i*)dst_magnitude,  magnitude);
+            _mm_storeu_si128((__m128i*)dst_positive_x, positive_x);
+            _mm_storeu_si128((__m128i*)dst_negative_x, negative_x);
+            _mm_storeu_si128((__m128i*)dst_positive_y, positive_y);
+            _mm_storeu_si128((__m128i*)dst_negative_y, negative_y);
+
+            // TODO: Compute average? Compute sum?
+            // Skip pushing entire block if almost all lt 10
+
+            for (s32 dx = 0; dx < 16; dx++)
+            {
+                if (dst_magnitude[dx] > threshold)
+                {
+                    asci_Feature feature = {0};
+                    feature.x = x+dx;
+                    feature.y = y;
+                    feature.gx = (s16)dst_positive_x[dx]-(s16)dst_negative_x[dx];
+                    feature.gy = (s16)dst_positive_y[dx]-(s16)dst_negative_y[dx];
+                    feature.gg = (s16)dst_magnitude[dx];
+                    out_features[count++] = feature;
+                }
+            }
+        }
+    }
+    *out_feature_count = count;
+}
+#else
+void asci_sobel(
     u08 *in_gray,
     s32  in_width,
     s32  in_height,
@@ -230,6 +355,7 @@ void asci_sobel(
     }
     *out_feature_count = feature_count;
 }
+#endif
 
 // This algorithm has a maximal period of 2^128 − 1.
 // https://en.wikipedia.org/wiki/Xorshift
@@ -362,24 +488,27 @@ void asc_find_lines(
     s32 in_height,
     asc_Line **out_lines,
     s32 *out_count,
+    s32 max_out_count,
     s16 sobel_threshold,
     s32 sample_count,
     r32 suppression_window_t,
-    r32 suppression_window_r)
+    r32 suppression_window_r,
+    r32 peak_exit_threshold)
 {
     // TODO: This can be a static array. Let the user define max
     // dimensions for the image, and provide default sizes.
     asci_Feature *features = (asci_Feature*)calloc(in_width*in_height, sizeof(asci_Feature));
     s32 feature_count = 0;
 
+    TIMING("sobel");
     asci_sobel(
-        in_rgb,
         in_gray,
         in_width,
         in_height,
         sobel_threshold,
         features,
         &feature_count);
+    TIMING("sobel");
 
     GDB("sobel features",
     {
@@ -397,6 +526,7 @@ void asc_find_lines(
         glEnd();
     });
 
+    TIMING("hough");
     asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
     s32 vote_count = 0;
     r32 t_min = 0.0f;
@@ -411,14 +541,16 @@ void asc_find_lines(
         &vote_count,
         &t_min, &t_max,
         &r_min, &r_max);
+    TIMING("hough");
 
     struct HoughCell
     {
         r32 avg_r;
         r32 avg_t;
-        r32 weight;
+        s32 count;
     };
 
+    TIMING("quantization");
     const s32 bins_t = 32;
     const s32 bins_r = 32;
     static HoughCell histogram[bins_r*bins_t];
@@ -426,10 +558,10 @@ void asc_find_lines(
     {
         histogram[i].avg_r = 0.0f;
         histogram[i].avg_t = 0.0f;
-        histogram[i].weight = 0.0f;
+        histogram[i].count = 0;
     }
 
-    r32 histogram_max_weight = 0.0f;
+    s32 histogram_max_count = 0.0f;
     for (s32 vote_index = 0; vote_index < vote_count; vote_index++)
     {
         asci_Vote vote = votes[vote_index];
@@ -440,48 +572,51 @@ void asc_find_lines(
         HoughCell *cell = &histogram[ti + ri*bins_t];
         cell->avg_r += r;
         cell->avg_t += t;
-        cell->weight += 1.0f;
-        if (cell->weight > histogram_max_weight)
-            histogram_max_weight = cell->weight;
+        cell->count++;
+        if (cell->count > histogram_max_count)
+            histogram_max_count = cell->count;
     }
 
-    // TODO: Perform running average instead
+    // TODO: Perform running average instead?
     for (s32 i = 0; i < bins_r*bins_t; i++)
     {
-        if (histogram[i].weight > 0.0f)
+        if (histogram[i].count > 0)
         {
-            histogram[i].avg_r /= histogram[i].weight;
-            histogram[i].avg_t /= histogram[i].weight;
+            histogram[i].avg_r /= (r32)histogram[i].count;
+            histogram[i].avg_t /= (r32)histogram[i].count;
         }
     }
+    TIMING("quantization");
 
+    TIMING("houghpeaks");
     // Peak extraction
-    const s32 lines_to_find = 16;
+    asc_Line *lines = (asc_Line*)calloc(max_out_count, sizeof(asc_Line));
+    s32 lines_found = 0;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
     s32 suppression_window_ti = round_r32_plus(suppression_window_t / bin_size_t);
     s32 suppression_window_ri = round_r32_plus(suppression_window_r / bin_size_r);
     if (suppression_window_ti % 2 != 0) suppression_window_ti++;
     if (suppression_window_ri % 2 != 0) suppression_window_ri++;
-    for (s32 iteration = 0; iteration < lines_to_find; iteration++)
+    for (s32 iteration = 0; iteration < max_out_count; iteration++)
     {
         // Extract max
         s32 peak_index = 0;
-        r32 peak_weight = 0;
+        s32 peak_count = 0;
         for (s32 i = 0; i < bins_t*bins_r; i++)
         {
-            if (histogram[i].weight > peak_weight)
+            if (histogram[i].count > peak_count)
             {
-                peak_weight = histogram[i].weight;
+                peak_count = histogram[i].count;
                 peak_index = i;
             }
         }
 
-        if (peak_weight < 0.025f*histogram_max_weight)
+        if (peak_count < peak_exit_threshold*histogram_max_count)
         {
             // TODO: Early exit
-            printf("Early exit at iteration %d; peak weight (%.2f) was less than threshold (%.2f)\n",
-                   iteration, peak_weight, 0.025f*histogram_max_weight);
+            printf("Early exit at iteration %d; peak count (%d) was less than threshold (%.2f)\n",
+                   iteration, peak_count, peak_exit_threshold*histogram_max_count);
             break;
         }
 
@@ -489,6 +624,10 @@ void asc_find_lines(
         s32 peak_ri = peak_index / bins_t;
         r32 peak_t = histogram[peak_index].avg_t;
         r32 peak_r = histogram[peak_index].avg_r;
+
+        lines[lines_found].t = peak_t;
+        lines[lines_found].r = peak_r;
+        lines_found++;
 
         GDB("hough histogram",
         {
@@ -506,16 +645,16 @@ void asc_find_lines(
                 {
                     r32 r = histogram[ti + ri*bins_t].avg_r;
                     r32 t = histogram[ti + ri*bins_t].avg_t;
-                    r32 weight = histogram[ti + ri*bins_t].weight;
+                    r32 count = histogram[ti + ri*bins_t].count;
 
                     if (mouse_ti == ti && mouse_ri == ri)
                     {
                         glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
-                        SetTooltip("%.2f %.2f %.2f", t, r, weight);
+                        SetTooltip("%.2f %.2f %.2f", t, r, count);
                     }
                     else
                     {
-                        ColorRamp(weight / (0.2f*histogram_max_weight));
+                        ColorRamp(count / (0.2f*histogram_max_count));
                     }
                     glVertex2f(t, r);
                 }
@@ -595,8 +734,7 @@ void asc_find_lines(
             glEnd();
         });
 
-        // suppress neighborhood
-        #if 1
+        // Neighborhood suppression
         // TODO: "Unroll" underflowing or oveflowing segments
         s32 ti0 = peak_ti - suppression_window_ti/2;
         s32 ti1 = peak_ti + suppression_window_ti/2;
@@ -625,20 +763,13 @@ void asc_find_lines(
                 write_t = clamp_s32(ti, 0, bins_t-1);
                 write_r = clamp_s32(ri, 0, bins_r-1);
             }
-            histogram[write_t + write_r*bins_t].weight = 0.0f;
+            histogram[write_t + write_r*bins_t].count = 0;
         }
-        #else
-        s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
-        s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
-        s32 ri0 = clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
-        s32 ri1 = clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
-        for (s32 ti = ti0; ti <= ti1; ti++)
-        for (s32 ri = ri0; ri <= ri1; ri++)
-        {
-            histogram[ti + ri*bins_t].weight = 0.0f;
-        }
-        #endif
     }
+    TIMING("houghpeaks");
+
+    *out_lines = lines;
+    *out_count = lines_found;
 
     free(votes);
     free(features);
