@@ -350,8 +350,6 @@ void asc_find_lines(
         &t_min, &t_max,
         &r_min, &r_max);
 
-    free(features);
-
     struct HoughCell
     {
         r32 avg_r;
@@ -359,8 +357,8 @@ void asc_find_lines(
         r32 weight;
     };
 
-    const s32 bins_t = 32;
-    const s32 bins_r = 32;
+    const s32 bins_t = 128;
+    const s32 bins_r = 128;
     static HoughCell histogram[bins_r*bins_t];
     for (s32 i = 0; i < bins_r*bins_t; i++)
     {
@@ -452,8 +450,7 @@ void asc_find_lines(
                     if (mouse_ti == ti && mouse_ri == ri)
                     {
                         glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
-                        SetTooltip("%.2f %.2f\n%d %d", t, r,
-                                   suppression_window_ti, suppression_window_ri);
+                        SetTooltip("%.2f %.2f %.2f", t, r, weight);
                     }
                     else
                     {
@@ -471,6 +468,46 @@ void asc_find_lines(
             glEnd();
         });
 
+        // Compute two base points from which
+        // line distance will be measured relative to.
+        float x0, y0, x1, y1;
+        float normal_x = cos(peak_t);
+        float normal_y = sin(peak_t);
+        float tangent_x = normal_y;
+        float tangent_y = -normal_x;
+        {
+            if (abs(normal_y) > abs(normal_x))
+            {
+                x0 = 0.0f;
+                x1 = in_width;
+                y0 = (peak_r-x0*normal_x)/normal_y;
+                y1 = (peak_r-x1*normal_x)/normal_y;
+            }
+            else
+            {
+                y0 = 0.0f;
+                y1 = in_height;
+                x0 = (peak_r-y0*normal_y)/normal_x;
+                x1 = (peak_r-y1*normal_y)/normal_x;
+            }
+        }
+
+        GDB("line estimate", {
+            static GLuint texture = 0;
+            if (!texture)
+                texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            Ortho(-1.0f, +1.0f, +1.0f, -1.0f);
+            DrawTexture(texture);
+            Ortho(0.0f, in_width, in_height, 0.0f);
+            glLineWidth(5.0f);
+            glBegin(GL_LINES);
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            glVertex2f(x0, y0);
+            glVertex2f(x1, y1);
+            glEnd();
+        });
+
         // suppress neighborhood
         s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
         s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
@@ -482,6 +519,8 @@ void asc_find_lines(
             histogram[ti + ri*bins_t].weight = 0.0f;
         }
     }
+
+    free(features);
 }
 
 #undef s32
