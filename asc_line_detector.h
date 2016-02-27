@@ -254,7 +254,7 @@ void asci_hough(
         if (f1.gg > 0 && f2.gg > 0)
         {
             r32 g_distance = abs((r32)(f1.gx*f2.gx+f1.gy*f2.gy)/(r32)(f1.gg*f2.gg));
-            if (g_distance > 0.6f)
+            if (g_distance < 0.5f)
             {
                 continue;
             }
@@ -357,8 +357,8 @@ void asc_find_lines(
         r32 weight;
     };
 
-    const s32 bins_t = 128;
-    const s32 bins_r = 128;
+    const s32 bins_t = 48;
+    const s32 bins_r = 48;
     static HoughCell histogram[bins_r*bins_t];
     for (s32 i = 0; i < bins_r*bins_t; i++)
     {
@@ -370,12 +370,12 @@ void asc_find_lines(
     r32 histogram_max_weight = 0.0f;
     for (s32 vote_index = 0; vote_index < vote_count; vote_index++)
     {
+        // TODO: Bilinear write
         asci_Vote vote = votes[vote_index];
         r32 t = vote.t;
         r32 r = vote.r;
         s32 ti = clamp_s32(bins_t*(t-t_min)/(t_max-t_min), 0, bins_t-1);
         s32 ri = clamp_s32(bins_r*(r-r_min)/(r_max-r_min), 0, bins_r-1);
-        // TODO: Bilinear write
         HoughCell *cell = &histogram[ti + ri*bins_t];
         cell->avg_r += r;
         cell->avg_t += t;
@@ -395,7 +395,7 @@ void asc_find_lines(
     }
 
     // Peak extraction
-    const s32 lines_to_find = 8;
+    const s32 lines_to_find = 16;
     r32 suppression_window_t = 20.0f * ASCI_PI / 180.0f;
     r32 suppression_window_r = 200.0f;
     r32 selection_window_t = 20.0f * ASCI_PI / 180.0f;
@@ -496,15 +496,41 @@ void asc_find_lines(
             static GLuint texture = 0;
             if (!texture)
                 texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+            BlendMode(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
             Ortho(-1.0f, +1.0f, +1.0f, -1.0f);
-            DrawTexture(texture);
+            DrawTexture(texture, 0.5f, 0.5f, 0.5f);
             Ortho(0.0f, in_width, in_height, 0.0f);
             glLineWidth(5.0f);
             glBegin(GL_LINES);
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
             glVertex2f(x0, y0);
             glVertex2f(x1, y1);
+            glEnd();
+
+            s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
+            s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
+            s32 ri0 = clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
+            s32 ri1 = clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
+            r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
+            r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
+            r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
+            r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
+            Ortho(0.0f, in_width, in_height, 0.0f);
+            BlendMode(GL_ONE, GL_ONE);
+            glPointSize(4.0f);
+            glBegin(GL_POINTS);
+            glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
+            for (s32 i = 0; i < vote_count; i++)
+            {
+                asci_Vote vote = votes[i];
+                if (vote.t >= t0 && vote.t <= t1 &&
+                    vote.r >= r0 && vote.r <= r1)
+                {
+                    glVertex2f(vote.x1, vote.y1);
+                    glVertex2f(vote.x2, vote.y2);
+                }
+            }
             glEnd();
         });
 
