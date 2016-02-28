@@ -410,6 +410,15 @@ void asci_hough(
     r32 *out_r_min,
     r32 *out_r_max)
 {
+    if (in_feature_count == 0)
+    {
+        *out_count = 0;
+        *out_t_min = 0;
+        *out_t_max = 0;
+        *out_r_min = 0;
+        *out_r_max = 0;
+        return;
+    }
     r32 t_min = ASCI_FLT_MAX;
     r32 t_max = -ASCI_FLT_MAX;
     r32 r_min = ASCI_FLT_MAX;
@@ -516,6 +525,13 @@ void asc_find_lines(
         sobel_threshold,
         features,
         &feature_count);
+
+    if (feature_count == 0)
+    {
+        *out_lines = 0;
+        *out_count = 0;
+        return;
+    }
 
     asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
     s32 vote_count = 0;
