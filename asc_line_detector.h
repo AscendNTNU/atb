@@ -539,7 +539,7 @@ void asc_find_lines(
     {
         *out_lines = 0;
         *out_count = 0;
-        return
+        return;
     }
 
     asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
