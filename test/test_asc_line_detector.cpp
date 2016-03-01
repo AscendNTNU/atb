@@ -1,10 +1,15 @@
+#ifdef USE_GDB
+#include <gdb.cpp>
+#endif
+
 #define ASC_LINE_DETECTOR_IMPLEMENTATION
 #define ASC_LINE_DETECTOR_SSE
 #include "../asc_line_detector.h"
 
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image.h"
-
+#include "stb_image_write.h"
 #include <stdio.h>
 
 unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
@@ -30,29 +35,90 @@ unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
 
 int main(int argc, char **argv)
 {
-    int width, height, channels;
-    unsigned char *input_rgb = stbi_load("data/test5.png", &width, &height, &channels, 3);
-    unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
-
-    asc_Line *lines = 0;
-    int lines_found = 0;
-    asc_find_lines(
-        input_rgb,
-        input_gray,
-        width,
-        height,
-        &lines,
-        &lines_found);
-
-    printf("Found %d lines\n", lines_found);
-    for (int i = 0; i < lines_found; i++)
+    struct Test
     {
-        asc_Line line = lines[i];
-        printf("%d: x0=%.2f y0=%.2f x1=%.2f y1=%.2f\n",
-               i, line.x_min, line.y_min, line.x_max, line.y_max);
+        const char *filename;
+        int expected_count;
+    };
+    Test tests[] = {
+        { "data/test1.png", 0 },
+        { "data/test2.png", 1 },
+        { "data/test3.png", 2 },
+        { "data/test4.png", 3 },
+        { "data/test5.png", 2 },
+        { "data/test6.png", 2 },
+        { "data/test7.png", 3 }
+    };
+
+    for (int test_id = 0; test_id < sizeof(tests)/sizeof(Test); test_id++)
+    {
+        int width, height, channels;
+        unsigned char *input_rgb = stbi_load(tests[test_id].filename, &width, &height, &channels, 3);
+        unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
+
+        asc_Line *lines = 0;
+        int lines_found = 0;
+        asc_find_lines(
+            input_rgb,
+            input_gray,
+            width,
+            height,
+            &lines,
+            &lines_found);
+
+        if (lines_found != tests[test_id].expected_count)
+        {
+            printf("FAILED ");
+        }
+        printf("Test %d: Found %d (expected %d)\n", test_id+1, lines_found, tests[test_id].expected_count);
+        for (int i = 0; i < lines_found; i++)
+        {
+            asc_Line line = lines[i];
+            printf("\t%d: x0=%.2f y0=%.2f x1=%.2f y1=%.2f\n", i, line.x_min, line.y_min, line.x_max, line.y_max);
+        }
+        printf("\n");
+
+        {
+            unsigned char *out = (unsigned char*)calloc(width*height, 3);
+            for (int i = 0; i < width*height; i++)
+            {
+                out[i] = input_rgb[i];
+            }
+            for (int i = 0; i < lines_found; i++)
+            {
+                asc_Line line = lines[i];
+                float x0 = line.x_min;
+                float x1 = line.x_max;
+                float y0 = line.y_min;
+                float y1 = line.y_max;
+                float dx = x1-x0;
+                float dy = y1-y0;
+                float len = sqrt(dx*dx+dy*dy);
+                int samples = (int)(len);
+                for (int j = 0; j < samples; j++)
+                {
+                    float t = (float)j/samples;
+                    int x = (int)(x0 + t*dx+0.5f);
+                    int y = (int)(y0 + t*dy+0.5f);
+                    if (x >= 0 && x < width &&
+                        y >= 0 && y < height)
+                    {
+                        out[(y*width+x)*3+0] = 255;
+                        out[(y*width+x)*3+1] = 40;
+                        out[(y*width+x)*3+2] = 40;
+                    }
+                }
+            }
+            char filename[256];
+            sprintf(filename, "data/test%d.out.png", test_id+1);
+            stbi_write_png(filename, width, height, 3, out, width*3);
+            free(out);
+        }
+
+        free(lines);
+        free(input_gray);
+        stbi_image_free(input_rgb);
     }
 
-    stbi_image_free(input_rgb);
-    free(input_gray);
     return 0;
 }
