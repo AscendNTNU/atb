@@ -4,8 +4,6 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
 
 #include <stdio.h>
 
@@ -33,7 +31,7 @@ unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
 int main(int argc, char **argv)
 {
     int width, height, channels;
-    unsigned char *input_rgb = stbi_load("data/video0040.jpg", &width, &height, &channels, 3);
+    unsigned char *input_rgb = stbi_load("data/test5.png", &width, &height, &channels, 3);
     unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
 
     asc_Line *lines = 0;
