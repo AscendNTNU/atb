@@ -156,6 +156,9 @@ void asc_find_lines(
 #endif
 
 #ifdef ASC_LINE_DETECTOR_IMPLEMENTATION
+#ifndef USE_GDB
+#define GDB(arg1, arg2) ;
+#endif
 #include <stdlib.h>
 #include <math.h>
 #define ASCI_PI 3.1415926f
@@ -538,6 +541,22 @@ void asc_find_lines(
         features,
         &feature_count);
 
+    GDB("sobel features",
+    {
+        Ortho(0.0f, in_width, in_height, 0.0f);
+        glPointSize(2.0f);
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        glBegin(GL_POINTS);
+        {
+            for (int i = 0; i < feature_count; i++)
+            {
+                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+                glVertex2f(features[i].x, features[i].y);
+            }
+        }
+        glEnd();
+    });
+
     if (feature_count == 0)
     {
         *out_lines = 0;
@@ -689,6 +708,127 @@ void asc_find_lines(
         lines[lines_found].x_max = x1;
         lines[lines_found].y_max = y1;
         lines_found++;
+
+        GDB("hough histogram",
+        {
+            s32 mouse_ti = round_r32_plus((0.5f+0.5f*input.mouse.x)*bins_t);
+            s32 mouse_ri = round_r32_plus((0.5f-0.5f*input.mouse.y)*bins_r);
+
+            Ortho(t_min, t_max, r_min, r_max);
+            BlendMode();
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            glPointSize(6.0f);
+            glBegin(GL_POINTS);
+            {
+                for (s32 ri = 0; ri < bins_r; ri++)
+                for (s32 ti = 0; ti < bins_t; ti++)
+                {
+                    r32 r = r_min + (r_max-r_min)*ri/bins_r;
+                    r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                    s32 count = histogram[ti + ri*bins_t].count;
+
+                    if (mouse_ti == ti && mouse_ri == ri)
+                    {
+                        glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
+                        SetTooltip("%d %d %d", ti, ri, count);
+                    }
+                    else
+                    {
+                        ColorRamp(count / (0.2f*histogram_max_count));
+                    }
+                    glVertex2f(t, r);
+                }
+            }
+            glEnd();
+
+            glPointSize(6.0f);
+            glBegin(GL_POINTS);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            {
+                s32 ti0 = peak_ti - suppression_window_ti/2;
+                s32 ti1 = peak_ti + suppression_window_ti/2;
+                s32 ri0 = peak_ri - suppression_window_ri/2;
+                s32 ri1 = peak_ri + suppression_window_ri/2;
+                for (s32 ti = ti0; ti <= ti1; ti++)
+                for (s32 ri = ri0; ri <= ri1; ri++)
+                {
+                    s32 write_t = 0;
+                    s32 write_r = 0;
+                    if (ti < 0)
+                    {
+                        write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
+                        write_r = asci_clamp_s32(bins_r-ri, 0, bins_r-1);
+                    }
+                    else if (ti >= bins_t)
+                    {
+                        write_t = asci_clamp_s32(ti-bins_t, 0, bins_t-1);
+                        write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+                    }
+                    else
+                    {
+                        write_t = asci_clamp_s32(ti, 0, bins_t-1);
+                        write_r = asci_clamp_s32(ri, 0, bins_r-1);
+                    }
+                    r32 r = r_min + (r_max-r_min)*write_r/bins_r;
+                    r32 t = t_min + (t_max-t_min)*write_t/bins_t;
+                    glVertex2f(t, r);
+                }
+            }
+            glEnd();
+
+            glPointSize(14.0f);
+            glBegin(GL_POINTS);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            r32 r = r_min + (r_max-r_min)*peak_ri/bins_r;
+            r32 t = t_min + (t_max-t_min)*peak_ti/bins_t;
+            glVertex2f(t, r);
+            glEnd();
+        });
+
+        #ifdef USE_GDB
+        GLuint texture = 0;
+        #endif
+        GDB("line estimate",
+        {
+            if (!texture)
+                texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+            BlendMode(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            Ortho(-1.0f, +1.0f, +1.0f, -1.0f);
+            DrawTexture(texture, 0.5f, 0.5f, 0.5f);
+            Ortho(0.0f, in_width, in_height, 0.0f);
+            glLineWidth(5.0f);
+            glBegin(GL_LINES);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            glVertex2f(x0, y0);
+            glVertex2f(x1, y1);
+            glEnd();
+
+            s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
+            s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
+            s32 ri0 = clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
+            s32 ri1 = clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
+            r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
+            r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
+            r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
+            r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
+            Ortho(0.0f, in_width, in_height, 0.0f);
+            BlendMode(GL_ONE, GL_ONE);
+            glPointSize(4.0f);
+            glBegin(GL_POINTS);
+            glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
+            for (s32 i = 0; i < vote_count; i++)
+            {
+                asci_Vote vote = votes[i];
+                if (vote.t >= t0 && vote.t <= t1 &&
+                    vote.r >= r0 && vote.r <= r1)
+                {
+                    glVertex2f(vote.x1, vote.y1);
+                    glVertex2f(vote.x2, vote.y2);
+                }
+            }
+            glEnd();
+        });
 
         // Neighborhood suppression
         // TODO: "Unroll" underflowing or oveflowing segments
