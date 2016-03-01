@@ -38,6 +38,9 @@
 //
 // Changelog
 // ------------------------------------------------------------------------
+//   1.2 (01. mar 2016) Bugfixes and robustification.
+//                      Empty or almost empty images are now handled in a
+//                      safer manner.
 //   1.1 (27. feb 2016) First public release
 //   1.0 (10. feb 2016) Ported code to single-file header library
 //
