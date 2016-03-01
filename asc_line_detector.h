@@ -416,6 +416,16 @@ void asci_hough(
     r32 r_max = -ASCI_FLT_MAX;
     s32 count = 0;
 
+    if (in_feature_count == 0)
+    {
+        *out_count = 0;
+        *out_t_min = 0.0f;
+        *out_t_max = 0.0f;
+        *out_r_min = 0.0f;
+        *out_r_max = 0.0f;
+        return;
+    }
+
     for (s32 sample = 0; sample < sample_count; sample++)
     {
         s32 sample_i1 = asci_xor128() % (in_feature_count);
@@ -523,6 +533,13 @@ void asc_find_lines(
         glEnd();
     });
 
+    if (feature_count == 0)
+    {
+        *out_count = 0;
+        *out_lines = 0;
+        return;
+    }
+
     asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
     s32 vote_count = 0;
     r32 t_min = 0.0f;
@@ -537,6 +554,13 @@ void asc_find_lines(
         &vote_count,
         &t_min, &t_max,
         &r_min, &r_max);
+
+    if (vote_count == 0)
+    {
+        *out_count = 0;
+        *out_lines = 0;
+        return;
+    }
 
     struct HoughCell
     {
@@ -581,6 +605,21 @@ void asc_find_lines(
         }
     }
 
+    // I need to ensure that the ranges t_max-t_min and r_max-r_min
+    // atleast as large as the suppression windows, since I iterate
+    // over the neighborhoods later. If they are zero, it means that
+    // we either found nothing, or that we only found one type of line.
+    if (abs(t_max-t_min) < suppression_window_t*1.25f)
+    {
+        t_max = suppression_window_t*1.25f;
+        t_min = 0.0f;
+    }
+    if (abs(r_max-r_min) < suppression_window_r*2.5f)
+    {
+        r_max = (suppression_window_r/2.0f)*1.25f;
+        r_min = -r_max;
+    }
+
     // Peak extraction
     asc_Line *lines = (asc_Line*)calloc(max_out_count, sizeof(asc_Line));
     s32 lines_found = 0;
@@ -604,7 +643,7 @@ void asc_find_lines(
             }
         }
 
-        if (peak_count < peak_exit_threshold*histogram_max_count)
+        if (peak_count <= peak_exit_threshold*histogram_max_count)
         {
             break;
         }
