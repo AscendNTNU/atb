@@ -564,6 +564,21 @@ void asc_find_lines(
         return;
     }
 
+    // I need to ensure that the ranges t_max-t_min and r_max-r_min
+    // atleast as large as the suppression windows, since I iterate
+    // over the neighborhoods later. If they are zero, it means that
+    // we either found nothing, or that we only found one type of line.
+    if (abs(t_max-t_min) < suppression_window_t*1.25f)
+    {
+        t_max = suppression_window_t*1.25f;
+        t_min = 0.0f;
+    }
+    if (abs(r_max-r_min) < suppression_window_r*2.5f)
+    {
+        r_max = (suppression_window_r/2.0f)*1.25f;
+        r_min = -r_max;
+    }
+
     struct HoughCell
     {
         r32 avg_r;
@@ -605,21 +620,6 @@ void asc_find_lines(
             histogram[i].avg_r /= (r32)histogram[i].count;
             histogram[i].avg_t /= (r32)histogram[i].count;
         }
-    }
-
-    // I need to ensure that the ranges t_max-t_min and r_max-r_min
-    // atleast as large as the suppression windows, since I iterate
-    // over the neighborhoods later. If they are zero, it means that
-    // we either found nothing, or that we only found one type of line.
-    if (abs(t_max-t_min) < suppression_window_t*1.25f)
-    {
-        t_max = suppression_window_t*1.25f;
-        t_min = 0.0f;
-    }
-    if (abs(r_max-r_min) < suppression_window_r*2.5f)
-    {
-        r_max = (suppression_window_r/2.0f)*1.25f;
-        r_min = -r_max;
     }
 
     // Peak extraction
