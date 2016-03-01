@@ -193,7 +193,7 @@ void asci_sobel(
     s32 *out_feature_count)
 {
     s32 count = 0;
-    for (s32 y = 1; y < in_height; y++)
+    for (s32 y = 1; y < in_height-1; y++)
     {
         for (s32 x = 1; x <= in_width-16; x += 16)
         {
@@ -555,6 +555,22 @@ void asc_find_lines(
             }
         }
         glEnd();
+
+        glBegin(GL_LINES);
+        {
+            for (int i = 0; i < feature_count; i++)
+            {
+                r32 gg = (r32)features[i].gg;
+                r32 gx = (r32)features[i].gx/gg;
+                r32 gy = (r32)features[i].gy/gg;
+                r32 x = (r32)features[i].x;
+                r32 y = (r32)features[i].y;
+                glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
+                glVertex2f(x, y);
+                glVertex2f(x+gx*0.5f, y+gy*0.5f);
+            }
+        }
+        glEnd();
     });
 
     if (feature_count == 0)
@@ -711,8 +727,8 @@ void asc_find_lines(
 
         GDB("hough histogram",
         {
-            s32 mouse_ti = round_r32_plus((0.5f+0.5f*input.mouse.x)*bins_t);
-            s32 mouse_ri = round_r32_plus((0.5f-0.5f*input.mouse.y)*bins_r);
+            s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
+            s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
 
             Ortho(t_min, t_max, r_min, r_max);
             BlendMode();
@@ -804,10 +820,10 @@ void asc_find_lines(
             glVertex2f(x1, y1);
             glEnd();
 
-            s32 ti0 = clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
-            s32 ti1 = clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
-            s32 ri0 = clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
-            s32 ri1 = clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
+            s32 ti0 = asci_clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
+            s32 ti1 = asci_clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
+            s32 ri0 = asci_clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
+            s32 ri1 = asci_clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
             r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
             r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
             r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
