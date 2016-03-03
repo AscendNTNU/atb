@@ -282,7 +282,7 @@ void asci_sobel(
 
             __m128i magnitude = _mm_adds_epu8(abs_gx, abs_gy);
 
-            __m128i skip_value = _mm_set1_epi8(20);
+            __m128i skip_value = _mm_set1_epi8(threshold);
             __m128i skip_cmp = _mm_cmplt_epi8(magnitude, skip_value);
             int move_mask = _mm_movemask_epi8(skip_cmp);
             if (move_mask == 0xffff)
