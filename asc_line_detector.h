@@ -163,6 +163,7 @@ void asc_find_lines(
 #include <math.h>
 #define ASCI_PI 3.1415926f
 #define ASCI_FLT_MAX 3.402823466e+38F
+#define ASCI_MAX_VOTES (4096*8)
 #define s32 int32_t
 #define s16 int16_t
 #define s08 int8_t
@@ -431,6 +432,8 @@ void asci_hough(
     r32 r_max = -ASCI_FLT_MAX;
     s32 count = 0;
 
+    r32 rejection_threshold = 0.5f;
+
     if (in_feature_count == 0)
     {
         *out_count = 0;
@@ -453,7 +456,7 @@ void asci_hough(
         if (f1.gg > 0 && f2.gg > 0)
         {
             r32 dot = f1.gx*f2.gx + f1.gy*f2.gy;
-            if (abs(dot) < 0.5f*f1.gg*f2.gg)
+            if (abs(dot) < rejection_threshold*f1.gg*f2.gg)
             {
                 continue;
             }
@@ -481,7 +484,7 @@ void asci_hough(
             r32 dot1 = (f1.gx*c+f1.gy*s) / f1.gg;
             r32 dot2 = (f2.gx*c+f2.gy*s) / f2.gg;
             r32 adot = 0.5f*(abs(dot1) + abs(dot2));
-            if (adot < 0.5f)
+            if (adot < rejection_threshold)
             {
                 continue;
             }
@@ -692,38 +695,181 @@ void asc_find_lines(
         s32 peak_ri = peak_index / bins_t;
         r32 peak_t = histogram[peak_index].avg_t;
         r32 peak_r = histogram[peak_index].avg_r;
+        r32 peak_normal_x = cos(peak_t);
+        r32 peak_normal_y = sin(peak_t);
+
+        // TODO(Simen): Find a better way of maintaining the vote
+        // list for a given peak neighborhood.
+
+        // TODO(Simen): Extract these during the suppression pass
+        // later. I.e. do the suppression up here. That way we
+        // also get wrapping correct.
+        static asci_Vote neighbor_votes[ASCI_MAX_VOTES];
+        s32 neighbor_count = 0;
+        {
+            s32 ti0 = asci_clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
+            s32 ti1 = asci_clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
+            s32 ri0 = asci_clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
+            s32 ri1 = asci_clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
+            r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
+            r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
+            r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
+            r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
+            for (s32 i = 0; i < vote_count; i++)
+            {
+                asci_Vote vote = votes[i];
+                if (vote.t >= t0 && vote.t <= t1 &&
+                    vote.r >= r0 && vote.r <= r1)
+                {
+                    r32 d1 = peak_normal_x*vote.x1 + peak_normal_y*vote.y1 - peak_r;
+                    r32 d2 = peak_normal_x*vote.x2 + peak_normal_y*vote.y2 - peak_r;
+                    // TODO(Simen): Quick hack, keep neighborhood local in space
+                    if (abs(d1)+abs(d2) < 100.0f)
+                    {
+                        neighbor_votes[neighbor_count] = vote;
+                        neighbor_count++;
+                    }
+                }
+            }
+        }
+
+        // Note(Simen): Attempt to fit lines to their voting neighborhood
+        // via linear least-squares. I do two versions of the minimization,
+        // depending on the orientation of the line.
+        r32 ls_t = peak_t;
+        r32 ls_r = peak_r;
+        {
+            r32 A = 0.0f;
+            r32 B = 0.0f;
+            r32 C = 0.0f;
+            r32 D = 0.0f;
+            s32 N = 2*neighbor_count;
+            r32 L = 1.0f/in_width;
+
+            if (abs(peak_normal_x) > abs(peak_normal_y))
+            {
+                // "Vertical" line
+                for (s32 i = 0; i < neighbor_count; i++)
+                {
+                    asci_Vote vote = neighbor_votes[i];
+                    r32 x1 = vote.x1*L;
+                    r32 y1 = vote.y1*L;
+                    r32 x2 = vote.x2*L;
+                    r32 y2 = vote.y2*L;
+                    A += y1*y1 + y2*y2;
+                    B += y1 + y2;
+                    C += y1*x1 + y2*x2;
+                    D += x1 + x2;
+                }
+
+                r32 b = (A*D-B*C)/(L*(A*N-B*B));
+                r32 a = (C-b*B*L)/A;
+                ls_t = atan(-a);
+                ls_r = b*cos(ls_t);
+            }
+            else
+            {
+                // "Horizontal" line
+                for (s32 i = 0; i < neighbor_count; i++)
+                {
+                    asci_Vote vote = neighbor_votes[i];
+                    r32 x1 = vote.x1*L;
+                    r32 y1 = vote.y1*L;
+                    r32 x2 = vote.x2*L;
+                    r32 y2 = vote.y2*L;
+                    A += x1*x1 + x2*x2;
+                    B += x1 + x2;
+                    C += x1*y1 + x2*y2;
+                    D += y1 + y2;
+                }
+
+                r32 b = (A*D-B*C)/(L*(A*N-B*B));
+                r32 a = (C-b*B*L)/A;
+                ls_t = atan(-1.0f/a);
+                ls_r = b*sin(ls_t);
+
+                GDB("horizontal", {
+                    Text("theta = %.2f\nrho = %.2f\na = %.2f\nb = %.2f", peak_t, peak_r, a, b);
+                });
+            }
+        }
+
+        r32 line_t = ls_t;
+        r32 line_r = ls_r;
 
         // Compute two base points from which
         // line distance will be measured relative to.
-        float x0, y0, x1, y1;
-        float normal_x = cos(peak_t);
-        float normal_y = sin(peak_t);
-        float tangent_x = normal_y;
-        float tangent_y = -normal_x;
+        r32 x0, y0, x1, y1;
+        r32 normal_x = cos(line_t);
+        r32 normal_y = sin(line_t);
+        r32 tangent_x = normal_y;
+        r32 tangent_y = -normal_x;
         {
             if (abs(normal_y) > abs(normal_x))
             {
                 x0 = 0.0f;
                 x1 = in_width;
-                y0 = (peak_r-x0*normal_x)/normal_y;
-                y1 = (peak_r-x1*normal_x)/normal_y;
+                y0 = (line_r-x0*normal_x)/normal_y;
+                y1 = (line_r-x1*normal_x)/normal_y;
             }
             else
             {
                 y0 = 0.0f;
                 y1 = in_height;
-                x0 = (peak_r-y0*normal_y)/normal_x;
-                x1 = (peak_r-y1*normal_y)/normal_x;
+                x0 = (line_r-y0*normal_y)/normal_x;
+                x1 = (line_r-y1*normal_y)/normal_x;
             }
         }
 
-        lines[lines_found].t = peak_t;
-        lines[lines_found].r = peak_r;
-        lines[lines_found].x_min = x0;
-        lines[lines_found].y_min = y0;
-        lines[lines_found].x_max = x1;
-        lines[lines_found].y_max = y1;
-        lines_found++;
+        #if 0
+        r32 square_error = 0.0f;
+        {
+            s32 ti0 = asci_clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
+            s32 ti1 = asci_clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
+            s32 ri0 = asci_clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
+            s32 ri1 = asci_clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
+            r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
+            r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
+            r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
+            r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
+            s32 count = 0;
+            for (s32 i = 0; i < vote_count; i++)
+            {
+                asci_Vote vote = votes[i];
+                if (vote.t >= t0 && vote.t <= t1 &&
+                    vote.r >= r0 && vote.r <= r1)
+                {
+                    r32 d1 = normal_x*vote.x1 + normal_y*vote.y1 - peak_r;
+                    r32 d2 = normal_x*vote.x2 + normal_y*vote.y2 - peak_r;
+                    r32 l1 = tangent_x*(vote.x1-x0) + tangent_y*(vote.y1-y0);
+                    r32 l2 = tangent_x*(vote.x2-x0) + tangent_y*(vote.y2-y0);
+                    d1 *= d1;
+                    d2 *= d2;
+                    square_error += d1+d2;
+                    count += 2;
+                }
+            }
+            if (count > 0)
+                square_error /= (r32)count;
+        }
+
+        // Note(Simen): Attempt to prune lines whose summed square
+        // perpendicular error is greater than a specified threshold.
+
+        // TODO(Simen): Adjust threshold based on altitude,
+        // since we don't want to reject thick lines.
+        r32 bad_fit_threshold = 1500.0f;
+        if (square_error < bad_fit_threshold)
+        {
+            lines[lines_found].t = peak_t;
+            lines[lines_found].r = peak_r;
+            lines[lines_found].x_min = x0;
+            lines[lines_found].y_min = y0;
+            lines[lines_found].x_max = x1;
+            lines[lines_found].y_max = y1;
+            lines_found++;
+        }
+        #endif
 
         GDB("hough histogram",
         {
@@ -810,9 +956,9 @@ void asc_find_lines(
                 texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
             BlendMode(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
-            Ortho(-1.0f, +1.0f, +1.0f, -1.0f);
+            Ortho(-1.0f, +1.0f, -1.0f, +1.0f);
             DrawTexture(texture, 0.5f, 0.5f, 0.5f);
-            Ortho(0.0f, in_width, in_height, 0.0f);
+            Ortho(0.0f, in_width, 0.0f, in_height);
             glLineWidth(5.0f);
             glBegin(GL_LINES);
             glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
@@ -828,22 +974,18 @@ void asc_find_lines(
             r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
             r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
             r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
-            Ortho(0.0f, in_width, in_height, 0.0f);
             BlendMode(GL_ONE, GL_ONE);
             glPointSize(4.0f);
             glBegin(GL_POINTS);
             glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
-            for (s32 i = 0; i < vote_count; i++)
+            for (s32 i = 0; i < neighbor_count; i++)
             {
-                asci_Vote vote = votes[i];
-                if (vote.t >= t0 && vote.t <= t1 &&
-                    vote.r >= r0 && vote.r <= r1)
-                {
-                    glVertex2f(vote.x1, vote.y1);
-                    glVertex2f(vote.x2, vote.y2);
-                }
+                asci_Vote vote = neighbor_votes[i];
+                glVertex2f(vote.x1, vote.y1);
+                glVertex2f(vote.x2, vote.y2);
             }
             glEnd();
+            // Text("Square error: %.2f", square_error);
         });
 
         // Neighborhood suppression
