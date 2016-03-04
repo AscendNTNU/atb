@@ -406,6 +406,279 @@ struct asci_Vote
     r32 t;
 };
 
+void asci_kernel_hough(
+    u08 *in_rgb,
+    asci_Feature *features,
+    s32 feature_count)
+{
+    const s32 in_width = 1280;
+    const s32 in_height = 720;
+    if (feature_count == 0)
+        return;
+    const s32 bins_t = 32;
+    const s32 bins_r = 32;
+    const s32 bins = bins_t*bins_r;
+    const r32 t_min = 0.0f;
+    const r32 t_max = ASCI_PI;
+    const r32 r_max = sqrt((r32)(in_width*in_width+in_height*in_height));
+    const r32 r_min = -r_max;
+    static s32 histogram[bins_t*bins_r];
+    s32 histogram_max_count = 0;
+    for (s32 i = 0; i < bins; i++)
+    {
+        histogram[i] = 0;
+    }
+    for (s32 fi = 0; fi < feature_count; fi++)
+    {
+        s32 x = features[fi].x;
+        s32 y = features[fi].y;
+        r32 gx = (r32)features[fi].gx;
+        r32 gy = (r32)features[fi].gy;
+        r32 tc = atan2(gy,gx);
+        r32 dt = 0.1f;
+        if (tc < 0.0f)
+            tc += ASCI_PI;
+        r32 t0 = tc-dt;
+        if (t0 < 0.0f)
+            t0 += ASCI_PI;
+        r32 t1 = tc+dt;
+        if (t1 > ASCI_PI)
+            t1 -= ASCI_PI;
+        s32 ti0 = asci_round_positive(bins_t*(t0-t_min)/(t_max-t_min));
+        ti0 = asci_clamp_s32(ti0, 0, bins_t-1);
+        s32 ti1 = asci_round_positive(bins_t*(t1-t_min)/(t_max-t_min));
+        ti1 = asci_clamp_s32(ti1, 0, bins_t-1);
+
+        for (s32 ti = 0; ti < bins_t; ti++)
+        {
+            if ((ti1 > ti0 && ti >= ti0 && ti <= ti1) ||
+                (ti1 < ti0 && (ti <= ti1 || ti >= ti0)))
+            {
+                r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                r32 r = x*cos(t) + y*sin(t);
+                s32 ri = asci_clamp_s32(asci_round_positive(bins_r*(r-r_min)/(r_max-r_min)),
+                                        0, bins_r-1);
+                s32 new_count = ++histogram[ti+ri*bins_t];
+                if (new_count > histogram_max_count)
+                    histogram_max_count = new_count;
+            }
+        }
+    }
+
+    GDB("kernel hough", {
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        Ortho(t_min, t_max, r_min, r_max);
+        BlendMode();
+
+        s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
+        s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
+
+        glPointSize(6.0f);
+        glBegin(GL_POINTS);
+        {
+            for (s32 ri = 0; ri < bins_r; ri++)
+            for (s32 ti = 0; ti < bins_t; ti++)
+            {
+                r32 r = r_min + (r_max-r_min)*ri/bins_r;
+                r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                s32 count = histogram[ti + ri*bins_t];
+
+                if (mouse_ti == ti && mouse_ri == ri)
+                {
+                    glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
+                    SetTooltip("%d %d %d", ti, ri, count);
+                }
+                else
+                {
+                    ColorRamp(count / (0.2f*histogram_max_count));
+                }
+                glVertex2f(t, r);
+            }
+        }
+        glEnd();
+    });
+
+    r32 bin_size_t = (t_max-t_min) / bins_t;
+    r32 bin_size_r = (r_max-r_min) / bins_r;
+    r32 suppression_window_t = 0.2f;
+    r32 suppression_window_r = 200.0f;
+    s32 suppression_window_ti = asci_round_positive(suppression_window_t / bin_size_t);
+    s32 suppression_window_ri = asci_round_positive(suppression_window_r / bin_size_r);
+    if (suppression_window_ti % 2 != 0) suppression_window_ti++;
+    if (suppression_window_ri % 2 != 0) suppression_window_ri++;
+    for (s32 iteration = 0; iteration < 16; iteration++)
+    {
+        // Extract max
+        s32 peak_index = 0;
+        s32 peak_count = 0;
+        for (s32 i = 0; i < bins; i++)
+        {
+            if (histogram[i] > peak_count)
+            {
+                peak_count = histogram[i];
+                peak_index = i;
+            }
+        }
+
+        s32 peak_ti = peak_index % bins_t;
+        s32 peak_ri = peak_index / bins_t;
+        r32 peak_t = t_min + peak_ti*(t_max-t_min)/bins_t;
+        r32 peak_r = r_min + peak_ri*(r_max-r_min)/bins_r;
+        r32 peak_normal_x = cos(peak_t);
+        r32 peak_normal_y = sin(peak_t);
+
+        r32 x0, y0, x1, y1;
+        r32 normal_x = cos(peak_t);
+        r32 normal_y = sin(peak_t);
+        r32 tangent_x = normal_y;
+        r32 tangent_y = -normal_x;
+        {
+            if (abs(normal_y) > abs(normal_x))
+            {
+                x0 = 0.0f;
+                x1 = in_width;
+                y0 = (peak_r-x0*normal_x)/normal_y;
+                y1 = (peak_r-x1*normal_x)/normal_y;
+            }
+            else
+            {
+                y0 = 0.0f;
+                y1 = in_height;
+                x0 = (peak_r-y0*normal_y)/normal_x;
+                x1 = (peak_r-y1*normal_y)/normal_x;
+            }
+        }
+
+        GDB("hough histogram",
+        {
+            s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
+            s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
+
+            Ortho(t_min, t_max, r_min, r_max);
+            BlendMode();
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            glPointSize(6.0f);
+            glBegin(GL_POINTS);
+            {
+                for (s32 ri = 0; ri < bins_r; ri++)
+                for (s32 ti = 0; ti < bins_t; ti++)
+                {
+                    r32 r = r_min + (r_max-r_min)*ri/bins_r;
+                    r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                    s32 count = histogram[ti + ri*bins_t];
+
+                    if (mouse_ti == ti && mouse_ri == ri)
+                    {
+                        glColor4f(0.4f, 1.0f, 0.4f, 1.0f);
+                        SetTooltip("%d %d %d", ti, ri, count);
+                    }
+                    else
+                    {
+                        ColorRamp(count / (0.2f*histogram_max_count));
+                    }
+                    glVertex2f(t, r);
+                }
+            }
+            glEnd();
+
+            glPointSize(6.0f);
+            glBegin(GL_POINTS);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            {
+                s32 ti0 = peak_ti - suppression_window_ti/2;
+                s32 ti1 = peak_ti + suppression_window_ti/2;
+                s32 ri0 = peak_ri - suppression_window_ri/2;
+                s32 ri1 = peak_ri + suppression_window_ri/2;
+                for (s32 ti = ti0; ti <= ti1; ti++)
+                for (s32 ri = ri0; ri <= ri1; ri++)
+                {
+                    s32 write_t = 0;
+                    s32 write_r = 0;
+                    if (ti < 0)
+                    {
+                        write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
+                        write_r = asci_clamp_s32(bins_r-ri, 0, bins_r-1);
+                    }
+                    else if (ti >= bins_t)
+                    {
+                        write_t = asci_clamp_s32(ti-bins_t, 0, bins_t-1);
+                        write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+                    }
+                    else
+                    {
+                        write_t = asci_clamp_s32(ti, 0, bins_t-1);
+                        write_r = asci_clamp_s32(ri, 0, bins_r-1);
+                    }
+                    r32 r = r_min + (r_max-r_min)*write_r/bins_r;
+                    r32 t = t_min + (t_max-t_min)*write_t/bins_t;
+                    glVertex2f(t, r);
+                }
+            }
+            glEnd();
+
+            glPointSize(14.0f);
+            glBegin(GL_POINTS);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            r32 r = r_min + (r_max-r_min)*peak_ri/bins_r;
+            r32 t = t_min + (t_max-t_min)*peak_ti/bins_t;
+            glVertex2f(t, r);
+            glEnd();
+        });
+
+        #ifdef USE_GDB
+        GLuint texture = 0;
+        #endif
+        GDB("line estimate",
+        {
+            if (!texture)
+                texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+            BlendMode(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            Ortho(-1.0f, +1.0f, -1.0f, +1.0f);
+            DrawTexture(texture, 0.5f, 0.5f, 0.5f);
+            Ortho(0.0f, in_width, 0.0f, in_height);
+            glLineWidth(5.0f);
+            glBegin(GL_LINES);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            glVertex2f(x0, y0);
+            glVertex2f(x1, y1);
+            glEnd();
+        });
+
+        // Neighborhood suppression
+        // TODO: "Unroll" underflowing or oveflowing segments
+        s32 ti0 = peak_ti - suppression_window_ti/2;
+        s32 ti1 = peak_ti + suppression_window_ti/2;
+        s32 ri0 = peak_ri - suppression_window_ri/2;
+        s32 ri1 = peak_ri + suppression_window_ri/2;
+        for (s32 ti = ti0; ti <= ti1; ti++)
+        for (s32 ri = ri0; ri <= ri1; ri++)
+        {
+            s32 write_t = 0;
+            s32 write_r = 0;
+            if (ti < 0)
+            {
+                // Topographically, t=0 and t=pi are identified
+                // by gluing (0, r_min)-(0, r_max) with
+                // (pi, r_max)-(pi, r_min)
+                write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
+                write_r = asci_clamp_s32(bins_r-ri, 0, bins_r-1);
+            }
+            else if (ti >= bins_t)
+            {
+                write_t = asci_clamp_s32(ti-bins_t, 0, bins_t-1);
+                write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+            }
+            else
+            {
+                write_t = asci_clamp_s32(ti, 0, bins_t-1);
+                write_r = asci_clamp_s32(ri, 0, bins_r-1);
+            }
+            histogram[write_t + write_r*bins_t] = 0;
+        }
+    }
+}
+
 void asci_hough(
     asci_Feature *in_features,
     s32 in_feature_count,
@@ -583,6 +856,8 @@ void asc_find_lines(
         return;
     }
 
+    asci_kernel_hough(in_rgb, features, feature_count);
+
     asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
     s32 vote_count = 0;
     r32 t_min = 0.0f;
@@ -700,6 +975,9 @@ void asc_find_lines(
 
         // TODO(Simen): Find a better way of maintaining the vote
         // list for a given peak neighborhood.
+
+        // TODO!!(Simen): DO THE BELOW THING. It's messing up one
+        // of the lines in test image 42.
 
         // TODO(Simen): Extract these during the suppression pass
         // later. I.e. do the suppression up here. That way we
