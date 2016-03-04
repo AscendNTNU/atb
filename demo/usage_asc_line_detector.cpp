@@ -34,15 +34,17 @@ int main(int argc, char **argv)
     unsigned char *input_rgb = stbi_load("data/video0040.jpg", &width, &height, &channels, 3);
     unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
 
-    asc_Line *lines = 0;
+    const int max_lines = 16;
+    asc_Line lines[max_lines];
     int lines_found = 0;
     asc_find_lines(
         input_rgb,
         input_gray,
         width,
         height,
-        &lines,
-        &lines_found);
+        lines,
+        &lines_found,
+        max_lines);
 
     printf("Found %d lines\n", lines_found);
     for (int i = 0; i < lines_found; i++)

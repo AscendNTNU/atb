@@ -173,9 +173,7 @@ void asc_find_lines(
 
 #ifdef ASC_LINE_DETECTOR_IMPLEMENTATION
 #ifndef USE_GDB
-#ifndef GDB
 #define GDB(arg1, arg2) ;
-#endif
 #endif
 #include <stdlib.h>
 #include <math.h>
