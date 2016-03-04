@@ -394,6 +394,12 @@ s32 asci_clamp_s32(s32 x, s32 low, s32 high)
     return x;
 }
 
+r32 asci_max(r32 x, r32 y)
+{
+    if (x > y) return x;
+    else return y;
+}
+
 struct asci_Vote
 {
     s32 x1;
@@ -699,6 +705,9 @@ void asc_find_lines(
         r32 peak_normal_x = cos(peak_t);
         r32 peak_normal_y = sin(peak_t);
 
+        // TODO(Simen): Reject votes that are spatially seperated from
+        // the other points along the line. Do this by sorting them by
+        // distance. Jfr. image video0042.
         static asci_Vote neighbor_votes[ASCI_MAX_VOTES];
         s32 neighbor_count = 0;
         {
@@ -728,7 +737,7 @@ void asc_find_lines(
                     r32 d1 = peak_normal_x*vote.x1 + peak_normal_y*vote.y1 - peak_r;
                     r32 d2 = peak_normal_x*vote.x2 + peak_normal_y*vote.y2 - peak_r;
                     // TODO(Simen): Quick hack, keep neighborhood local in space
-                    if (abs(d1)+abs(d2) < 100.0f)
+                    if (asci_max(abs(d1),abs(d2)) < 100.0f)
                     {
                         neighbor_votes[neighbor_count] = vote;
                         neighbor_count++;
@@ -740,6 +749,7 @@ void asc_find_lines(
         // Note(Simen): Attempt to fit lines to their voting neighborhood
         // via linear least-squares. I do two versions of the minimization,
         // depending on the orientation of the line.
+        #if 0
         r32 ls_t = peak_t;
         r32 ls_r = peak_r;
         {
@@ -796,6 +806,10 @@ void asc_find_lines(
 
         r32 line_t = ls_t;
         r32 line_r = ls_r;
+        #else
+        r32 line_t = peak_t;
+        r32 line_r = peak_r;
+        #endif
 
         // Compute two base points from which
         // line distance will be measured relative to.
@@ -821,6 +835,8 @@ void asc_find_lines(
             }
         }
 
+        // Note(Simen): Attempt to prune lines whose summed square
+        // perpendicular error is greater than a specified threshold.
         r32 square_error = 0.0f;
         {
             for (s32 i = 0; i < neighbor_count; i++)
@@ -835,9 +851,6 @@ void asc_find_lines(
             if (neighbor_count > 0)
                 square_error /= (r32)(2*neighbor_count);
         }
-
-        // Note(Simen): Attempt to prune lines whose summed square
-        // perpendicular error is greater than a specified threshold.
 
         // TODO(Simen): Adjust threshold based on altitude,
         // since we don't want to reject thick lines.
