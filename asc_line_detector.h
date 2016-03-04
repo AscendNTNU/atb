@@ -97,6 +97,10 @@
 //   Controls the minimum number of votes a peak must have to
 //   pass as a detected line. Specified as a fraction of the max
 //   count in the Hough space.
+// normal_error_threshold
+//   I reject lines whose supporting neighborhood of features have
+//   a squared perpendicular distance to the line greater than this
+//   threshold.
 //
 // Licence
 // ------------------------------------------------------------------------
@@ -151,7 +155,8 @@ void asc_find_lines(
     int32_t    param_hough_sample_count = 4096,
     float      param_suppression_window_t = 0.349f,
     float      param_suppression_window_r = 300.0f,
-    float      param_peak_exit_threshold = 0.1f);
+    float      param_peak_exit_threshold = 0.1f,
+    float      param_normal_error_threshold = 1200.0f);
 
 #endif
 
@@ -537,7 +542,8 @@ void asc_find_lines(
     s32 sample_count,
     r32 suppression_window_t,
     r32 suppression_window_r,
-    r32 peak_exit_threshold)
+    r32 peak_exit_threshold,
+    r32 normal_error_threshold)
 {
     // TODO: This can be a static array. Let the user define max
     // dimensions for the image, and provide default sizes.
@@ -749,6 +755,9 @@ void asc_find_lines(
         // Note(Simen): Attempt to fit lines to their voting neighborhood
         // via linear least-squares. I do two versions of the minimization,
         // depending on the orientation of the line.
+        // Note(Simen): This has been temporarily disabled, due to various
+        // reasons. For now, you'll have to live with the fact that disturbances
+        // will cause otherwise good lines to be rejected.
         #if 0
         r32 ls_t = peak_t;
         r32 ls_r = peak_r;
@@ -854,10 +863,7 @@ void asc_find_lines(
 
         // TODO(Simen): Adjust threshold based on altitude,
         // since we don't want to reject thick lines.
-        // TODO(Simen): Weight the distance and count thresholds
-        r32 bad_fit_threshold = 1000.0f;
-        s32 count_threshold = 60;
-        if (square_error < bad_fit_threshold && neighbor_count > count_threshold)
+        if (square_error < normal_error_threshold)
         {
             lines[lines_found].t = peak_t;
             lines[lines_found].r = peak_r;
@@ -882,8 +888,6 @@ void asc_find_lines(
                 for (s32 ri = 0; ri < bins_r; ri++)
                 for (s32 ti = 0; ti < bins_t; ti++)
                 {
-                    // r32 r = r_min + (r_max-r_min)*ri/bins_r;
-                    // r32 t = t_min + (t_max-t_min)*ti/bins_t;
                     r32 r = histogram[ti + ri*bins_t].avg_r;
                     r32 t = histogram[ti + ri*bins_t].avg_t;
                     s32 count = histogram[ti + ri*bins_t].count;
