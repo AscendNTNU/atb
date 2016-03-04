@@ -1,4 +1,10 @@
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image.h"
+#include "stb_image_write.h"
+
 #ifdef USE_GDB
+#define GDB_NO_STB_IMAGE_WRITE
 #include <gdb.cpp>
 #endif
 
@@ -6,10 +12,6 @@
 #define ASC_LINE_DETECTOR_SSE
 #include "../asc_line_detector.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image.h"
-#include "stb_image_write.h"
 #include <stdio.h>
 
 unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
@@ -56,15 +58,17 @@ int main(int argc, char **argv)
         unsigned char *input_rgb = stbi_load(tests[test_id].filename, &width, &height, &channels, 3);
         unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
 
-        asc_Line *lines = 0;
+        const int max_lines = 16;
+        asc_Line lines[max_lines] = {0};
         int lines_found = 0;
         asc_find_lines(
             input_rgb,
             input_gray,
             width,
             height,
-            &lines,
-            &lines_found);
+            lines,
+            &lines_found,
+            max_lines);
 
         if (lines_found != tests[test_id].expected_count)
         {
@@ -115,7 +119,6 @@ int main(int argc, char **argv)
             free(out);
         }
 
-        free(lines);
         free(input_gray);
         stbi_image_free(input_rgb);
     }

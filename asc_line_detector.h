@@ -143,14 +143,25 @@ struct asc_Line
     float color_b;
 };
 
+// in_rgb
+//   A densily packed array of 8bit RGB values
+// in_gray
+//   A densily packed array of 8bit grayscale values
+// in_width, in_height
+//   Width and height of in_rgb and in_gray.
+// out_lines, param_max_out_count
+//   The resulting list of lines found. You allocate this.
+//   The list will be filled with at most max_out_count elements.
+// out_count
+//   The number of lines that were written to the output buffer.
 void asc_find_lines(
     uint8_t   *in_rgb,
     uint8_t   *in_gray,
     int32_t    in_width,
     int32_t    in_height,
-    asc_Line **out_lines,
+    asc_Line  *out_lines,
     int32_t   *out_count,
-    int32_t    param_max_out_count = 16,
+    int32_t    param_max_out_count,
     int16_t    param_sobel_threshold = 10,
     int32_t    param_hough_sample_count = 4096,
     float      param_suppression_window_t = 0.349f,
@@ -535,7 +546,7 @@ void asc_find_lines(
     u08 *in_gray,
     s32 in_width,
     s32 in_height,
-    asc_Line **out_lines,
+    asc_Line *out_lines,
     s32 *out_count,
     s32 max_out_count,
     s16 sobel_threshold,
@@ -572,6 +583,7 @@ void asc_find_lines(
         }
         glEnd();
 
+        glLineWidth(1.0f);
         glBegin(GL_LINES);
         {
             for (int i = 0; i < feature_count; i++)
@@ -591,7 +603,6 @@ void asc_find_lines(
 
     if (feature_count == 0)
     {
-        *out_lines = 0;
         *out_count = 0;
         return;
     }
@@ -614,7 +625,6 @@ void asc_find_lines(
     if (vote_count == 0)
     {
         *out_count = 0;
-        *out_lines = 0;
         return;
     }
 
@@ -677,7 +687,6 @@ void asc_find_lines(
     }
 
     // Peak extraction
-    asc_Line *lines = (asc_Line*)calloc(max_out_count, sizeof(asc_Line));
     s32 lines_found = 0;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
@@ -865,12 +874,12 @@ void asc_find_lines(
         // since we don't want to reject thick lines.
         if (square_error < normal_error_threshold)
         {
-            lines[lines_found].t = peak_t;
-            lines[lines_found].r = peak_r;
-            lines[lines_found].x_min = x0;
-            lines[lines_found].y_min = y0;
-            lines[lines_found].x_max = x1;
-            lines[lines_found].y_max = y1;
+            out_lines[lines_found].t = peak_t;
+            out_lines[lines_found].r = peak_r;
+            out_lines[lines_found].x_min = x0;
+            out_lines[lines_found].y_min = y0;
+            out_lines[lines_found].x_max = x1;
+            out_lines[lines_found].y_max = y1;
             lines_found++;
         }
 
@@ -1024,7 +1033,6 @@ void asc_find_lines(
         }
     }
 
-    *out_lines = lines;
     *out_count = lines_found;
 
     free(votes);
