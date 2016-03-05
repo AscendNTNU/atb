@@ -594,6 +594,9 @@ void asci_hough_histogram(
     *out_histogram_max_count = histogram_max_count;
 }
 
+#define ASCI_TI_TO_T(ti) (t_min + (t_max-t_min)*ti/bins_t)
+#define ASCI_RI_TO_R(ri) (r_min + (r_max-r_min)*ri/bins_r)
+
 void asc_find_lines(
     u08 *in_rgb,
     u08 *in_gray,
@@ -609,8 +612,7 @@ void asc_find_lines(
     r32 peak_exit_threshold,
     r32 normal_error_threshold)
 {
-    // TODO: This can be a static array. Let the user define max
-    // dimensions for the image, and provide default sizes.
+    // @ Static allocation
     asci_Feature *features = (asci_Feature*)calloc(in_width*in_height, sizeof(asci_Feature));
     s32 feature_count = 0;
     asci_sobel(
@@ -660,6 +662,7 @@ void asc_find_lines(
         return;
     }
 
+    // @ Static allocation
     asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
     s32 vote_count = 0;
     r32 t_min = 0.0f;
@@ -685,6 +688,7 @@ void asc_find_lines(
     // atleast as large as the suppression windows, since I iterate
     // over the neighborhoods later. If they are zero, it means that
     // we either found nothing, or that we only found one type of line.
+    // @ Wrapping
     if (abs(t_max-t_min) < suppression_window_t*1.25f)
     {
         t_max = suppression_window_t*1.25f;
@@ -710,7 +714,6 @@ void asc_find_lines(
         vote_count,
         &histogram_max_count);
 
-    // Peak extraction
     s32 lines_found = 0;
     r32 bin_size_t = (t_max-t_min) / bins_t;
     r32 bin_size_r = (r_max-r_min) / bins_r;
@@ -748,9 +751,7 @@ void asc_find_lines(
         r32 peak_normal_x = cos(peak_t);
         r32 peak_normal_y = sin(peak_t);
 
-        // TODO(Simen): Reject votes that are spatially seperated from
-        // the other points along the line. Do this by sorting them by
-        // distance. Jfr. image video0042.
+        // Collect the votes in a window around the peak.
         static asci_Vote neighbor_votes[ASCI_MAX_VOTES];
         s32 neighbor_count = 0;
         {
@@ -758,14 +759,11 @@ void asc_find_lines(
             s32 ti1 = peak_ti + suppression_window_ti/2;
             s32 ri0 = peak_ri - suppression_window_ri/2;
             s32 ri1 = peak_ri + suppression_window_ri/2;
-            r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
-            r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
-            r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
-            r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
-            if (t0 < t_min) t0 += (t_max-t_min);
-            if (r0 < r_min) r0 += (r_max-r_min);
-            if (t1 < t_min) t1 += (t_max-t_min);
-            if (r1 < r_min) r1 += (r_max-r_min);
+            r32 t0 = ASCI_TI_TO_T(ti0);
+            r32 t1 = ASCI_TI_TO_T(ti1);
+            r32 r0 = ASCI_RI_TO_R(ri0);
+            r32 r1 = ASCI_RI_TO_R(ri1);
+            // @ Wrapping
             for (s32 i = 0; i < vote_count; i++)
             {
                 asci_Vote vote = votes[i];
@@ -779,8 +777,7 @@ void asc_find_lines(
                 {
                     r32 d1 = peak_normal_x*vote.x1 + peak_normal_y*vote.y1 - peak_r;
                     r32 d2 = peak_normal_x*vote.x2 + peak_normal_y*vote.y2 - peak_r;
-                    // TODO(Simen): Quick hack, keep neighborhood local in space
-                    if (asci_max(abs(d1),abs(d2)) < 100.0f)
+                    if (asci_max(abs(d1),abs(d2)) < 100.0f) // @ Better neighborhood collection.
                     {
                         neighbor_votes[neighbor_count] = vote;
                         neighbor_count++;
@@ -803,8 +800,8 @@ void asc_find_lines(
             }
         }
 
-        // Note(Simen): This is very experimental. Remove this.
-        #if 1
+        // This is very experimental and will be removed soon.
+        #if 0
         {
             r32 x0, y0, x1, y1;
             r32 normal_x = cos(peak_t);
@@ -881,12 +878,11 @@ void asc_find_lines(
         }
         #endif
 
-        // Note(Simen): Attempt to fit lines to their voting neighborhood
-        // via linear least-squares. I do two versions of the minimization,
-        // depending on the orientation of the line.
-        // Note(Simen): This has been temporarily disabled, due to various
-        // reasons. For now, you'll have to live with the fact that disturbances
-        // will cause otherwise good lines to be rejected.
+        // Fit lines to their voting neighborhood by minimizing square
+        // vertical or horizontal error. This is implemented as one of
+        // two linear least-squares programs, depending on the line
+        // orientation.
+        // @ Least-squares fitting
         #if 0
         r32 ls_t = peak_t;
         r32 ls_r = peak_r;
@@ -949,13 +945,13 @@ void asc_find_lines(
         r32 line_r = peak_r;
         #endif
 
-        // Compute two base points from which
-        // line distance will be measured relative to.
-        r32 x0, y0, x1, y1;
         r32 normal_x = cos(line_t);
         r32 normal_y = sin(line_t);
         r32 tangent_x = normal_y;
         r32 tangent_y = -normal_x;
+
+        // Compute terminal points for drawing the line
+        r32 x0, y0, x1, y1;
         {
             if (abs(normal_y) > abs(normal_x))
             {
@@ -973,9 +969,8 @@ void asc_find_lines(
             }
         }
 
-        // Note(Simen): Attempt to prune lines whose summed square
-        // perpendicular error is greater than a specified threshold.
-        r32 square_error = 0.0f;
+        // Compute the average squared normal distance to the line
+        r32 square_error = 0.0f; // @ Error metrics
         {
             for (s32 i = 0; i < neighbor_count; i++)
             {
@@ -990,9 +985,8 @@ void asc_find_lines(
                 square_error /= (r32)(2*neighbor_count);
         }
 
-        // TODO(Simen): Adjust threshold based on altitude,
-        // since we don't want to reject thick lines.
-        if (square_error < normal_error_threshold)
+        // Reject line based on the error metric computed above
+        if (square_error < normal_error_threshold) // @ Altitude-based threshold
         {
             out_lines[lines_found].t = peak_t;
             out_lines[lines_found].r = peak_r;
@@ -1117,36 +1111,35 @@ void asc_find_lines(
             Text("Square error: %.2f\nCount: %d", square_error, neighbor_count);
         });
 
-        // Neighborhood suppression
-        // TODO: "Unroll" underflowing or oveflowing segments
-        s32 ti0 = peak_ti - suppression_window_ti/2;
-        s32 ti1 = peak_ti + suppression_window_ti/2;
-        s32 ri0 = peak_ri - suppression_window_ri/2;
-        s32 ri1 = peak_ri + suppression_window_ri/2;
-        for (s32 ti = ti0; ti <= ti1; ti++)
-        for (s32 ri = ri0; ri <= ri1; ri++)
+        // Zero the histogram count of votes inside the suppression window
         {
-            s32 write_t = 0;
-            s32 write_r = 0;
-            if (ti < 0)
+            // @ Suppression window wrapping
+            s32 ti0 = peak_ti - suppression_window_ti/2;
+            s32 ti1 = peak_ti + suppression_window_ti/2;
+            s32 ri0 = peak_ri - suppression_window_ri/2;
+            s32 ri1 = peak_ri + suppression_window_ri/2;
+            for (s32 ti = ti0; ti <= ti1; ti++)
+            for (s32 ri = ri0; ri <= ri1; ri++)
             {
-                // Topographically, t=0 and t=pi are identified
-                // by gluing (0, r_min)-(0, r_max) with
-                // (pi, r_max)-(pi, r_min)
-                write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
-                write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+                s32 write_t = 0;
+                s32 write_r = 0;
+                if (ti < 0)
+                {
+                    write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
+                    write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+                }
+                else if (ti >= bins_t)
+                {
+                    write_t = asci_clamp_s32(ti-bins_t, 0, bins_t-1);
+                    write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
+                }
+                else
+                {
+                    write_t = asci_clamp_s32(ti, 0, bins_t-1);
+                    write_r = asci_clamp_s32(ri, 0, bins_r-1);
+                }
+                histogram[write_t + write_r*bins_t].count = 0;
             }
-            else if (ti >= bins_t)
-            {
-                write_t = asci_clamp_s32(ti-bins_t, 0, bins_t-1);
-                write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
-            }
-            else
-            {
-                write_t = asci_clamp_s32(ti, 0, bins_t-1);
-                write_r = asci_clamp_s32(ri, 0, bins_r-1);
-            }
-            histogram[write_t + write_r*bins_t].count = 0;
         }
     }
 
@@ -1164,3 +1157,37 @@ void asc_find_lines(
 #undef u08
 #undef r32
 #endif
+
+
+// Todo list
+// @ Static allocation:
+//   The library has many unecessary dynamic allocations per call.
+//   Replace these with static allocators, or perhaps user-side allocations.
+
+// @ Altitude-based threshold:
+//   Rejection based on squared normal distance alone will not be robust
+//   against changing the camera height, since thick lines will give a large
+//   response. Need to either have altitude-based threshold, or use a different
+//   error metric. For example, also consider normal distance variance.
+
+// @ Suppression window wrapping
+//   This is currently not correct if t_min and t_max != 0 and pi.
+
+// @ Least-square fitting
+//   Currently disabled because it works badly in the presence of outliers.
+//   Want to atleast partially prune lines before performing minimzation.
+
+// @ Better neighborhood collection
+//   We have a tradeoff between rejecting votes that have large spatial
+//   seperation from the initial guess, and keeping them to determine
+//   the fitness of the line in the end. Jfr. image video0042.
+//   This might be fixed by using error metrics for rejection, such as
+//   variance _and_ average normal error.
+
+// @ Error metrics
+//   Want to use better error metrics for deciding which lines to reject.
+
+// @ Wrapping
+//   How do we correctly wrap rt's? If t_min, t_max != 0 and pi...?
+//   Do we just *=-1 the r's? Do we want to set t_min and t_max to
+//   just always be 0 and pi, but let r_min and r_max dynamically size?
