@@ -180,6 +180,8 @@ void asc_find_lines(
 #define ASCI_PI 3.1415926f
 #define ASCI_FLT_MAX 3.402823466e+38F
 #define ASCI_MAX_VOTES (4096*8)
+#define ASCI_MAX_WIDTH (1920)
+#define ASCI_MAX_HEIGHT (1080)
 #define s32 int32_t
 #define s16 int16_t
 #define s08 int8_t
@@ -539,6 +541,59 @@ void asci_hough(
     *out_count = count;
 }
 
+struct asci_HoughCell
+{
+    r32 avg_r;
+    r32 avg_t;
+    s32 count;
+};
+
+void asci_hough_histogram(
+    asci_HoughCell *histogram,
+    s32 bins_t,
+    s32 bins_r,
+    r32 t_min,
+    r32 t_max,
+    r32 r_min,
+    r32 r_max,
+    asci_Vote *votes,
+    s32 vote_count,
+    s32 *out_histogram_max_count)
+{
+    for (s32 i = 0; i < bins_r*bins_t; i++)
+    {
+        histogram[i].avg_r = 0.0f;
+        histogram[i].avg_t = 0.0f;
+        histogram[i].count = 0;
+    }
+
+    s32 histogram_max_count = 0;
+    for (s32 i = 0; i < vote_count; i++)
+    {
+        asci_Vote vote = votes[i];
+        r32 t = vote.t;
+        r32 r = vote.r;
+        s32 ti = asci_clamp_s32(bins_t*(t-t_min)/(t_max-t_min), 0, bins_t-1);
+        s32 ri = asci_clamp_s32(bins_r*(r-r_min)/(r_max-r_min), 0, bins_r-1);
+        asci_HoughCell *cell = &histogram[ti + ri*bins_t];
+        cell->avg_r += r;
+        cell->avg_t += t;
+        cell->count++;
+        if (cell->count > histogram_max_count)
+            histogram_max_count = cell->count;
+    }
+
+    for (s32 i = 0; i < bins_r*bins_t; i++)
+    {
+        if (histogram[i].count > 0)
+        {
+            histogram[i].avg_r /= (r32)histogram[i].count;
+            histogram[i].avg_t /= (r32)histogram[i].count;
+        }
+    }
+    *out_histogram_max_count = histogram_max_count;
+}
+
 void asc_find_lines(
     u08 *in_rgb,
     u08 *in_gray,
@@ -641,48 +696,19 @@ void asc_find_lines(
         r_min = -r_max;
     }
 
-    struct HoughCell
-    {
-        r32 avg_r;
-        r32 avg_t;
-        s32 count;
-    };
-
     const s32 bins_t = 32;
     const s32 bins_r = 32;
-    static HoughCell histogram[bins_r*bins_t];
-    for (s32 i = 0; i < bins_r*bins_t; i++)
-    {
-        histogram[i].avg_r = 0.0f;
-        histogram[i].avg_t = 0.0f;
-        histogram[i].count = 0;
-    }
-
-    s32 histogram_max_count = 0.0f;
-    for (s32 vote_index = 0; vote_index < vote_count; vote_index++)
-    {
-        asci_Vote vote = votes[vote_index];
-        r32 t = vote.t;
-        r32 r = vote.r;
-        s32 ti = asci_clamp_s32(bins_t*(t-t_min)/(t_max-t_min), 0, bins_t-1);
-        s32 ri = asci_clamp_s32(bins_r*(r-r_min)/(r_max-r_min), 0, bins_r-1);
-        HoughCell *cell = &histogram[ti + ri*bins_t];
-        cell->avg_r += r;
-        cell->avg_t += t;
-        cell->count++;
-        if (cell->count > histogram_max_count)
-            histogram_max_count = cell->count;
-    }
-
-    // TODO: Perform running average instead?
-    for (s32 i = 0; i < bins_r*bins_t; i++)
-    {
-        if (histogram[i].count > 0)
-        {
-            histogram[i].avg_r /= (r32)histogram[i].count;
-            histogram[i].avg_t /= (r32)histogram[i].count;
-        }
-    }
+    static asci_HoughCell histogram[bins_t*bins_r];
+    s32 histogram_max_count = 0;
+    asci_hough_histogram(
+        histogram,
+        bins_t,
+        bins_r,
+        t_min, t_max,
+        r_min, r_max,
+        votes,
+        vote_count,
+        &histogram_max_count);
 
     // Peak extraction
     s32 lines_found = 0;
@@ -710,6 +736,10 @@ void asc_find_lines(
         {
             break;
         }
+
+        const s32 MAX_SUPPORT_FEATURES_COUNT = 4096*8;
+        static asci_Feature support_features[MAX_SUPPORT_FEATURES_COUNT];
+        s32 support_features_count = 0;
 
         s32 peak_ti = peak_index % bins_t;
         s32 peak_ri = peak_index / bins_t;
@@ -755,9 +785,101 @@ void asc_find_lines(
                         neighbor_votes[neighbor_count] = vote;
                         neighbor_count++;
                     }
+
+                    asci_Feature f1 = {0};
+                    f1.x = vote.x1;
+                    f1.y = vote.y1;
+                    f1.gx = vote.gx1;
+                    f1.gy = vote.gy1;
+                    support_features[support_features_count++] = f1;
+
+                    asci_Feature f2 = {0};
+                    f2.x = vote.x2;
+                    f2.y = vote.y2;
+                    f2.gx = vote.gx2;
+                    f2.gy = vote.gy2;
+                    support_features[support_features_count++] = f2;
                 }
             }
         }
+
+        // Note(Simen): This is very experimental. Remove this.
+        #if 1
+        {
+            r32 x0, y0, x1, y1;
+            r32 normal_x = cos(peak_t);
+            r32 normal_y = sin(peak_t);
+            r32 tangent_x = normal_y;
+            r32 tangent_y = -normal_x;
+            {
+                if (abs(normal_y) > abs(normal_x))
+                {
+                    x0 = 0.0f;
+                    x1 = in_width;
+                    y0 = (peak_r-x0*normal_x)/normal_y;
+                    y1 = (peak_r-x1*normal_x)/normal_y;
+                }
+                else
+                {
+                    y0 = 0.0f;
+                    y1 = in_height;
+                    x0 = (peak_r-y0*normal_y)/normal_x;
+                    x1 = (peak_r-y1*normal_y)/normal_x;
+                }
+            }
+
+            // Sort support features
+            struct SortEntry
+            {
+                r32 key;
+                s32 index;
+            };
+            SortEntry entries[MAX_SUPPORT_FEATURES_COUNT];
+            for (s32 fi = 0; fi < support_features_count; fi++)
+            {
+                r32 l = tangent_x*(support_features[fi].x-x0)+
+                        tangent_y*(support_features[fi].y-y0);
+                entries[fi].key = l;
+                entries[fi].index = fi;
+            }
+            qsort(entries, support_features_count, sizeof(SortEntry),
+            [](const void *pa, const void *pb)
+            {
+                r32 dl = ((SortEntry*)pa)->key - ((SortEntry*)pb)->key;
+                if (dl > 0.0f) return 1;
+                else if (dl < 0.0f) return -1;
+                else return 0;
+            });
+
+            GDB("test sorting", {
+                Clear(0.0f, 0.0f, 0.0f, 1.0f);
+                Ortho(0.0f, in_width, 0.0f, in_height);
+                BlendMode();
+                glPointSize(4.0f);
+                glLineWidth(1.0f);
+                static s32 visible_count = 1;
+                glBegin(GL_POINTS);
+                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+                for (s32 i = 0; i < visible_count; i++)
+                {
+                    s32 index = entries[i].index;
+                    s32 x = support_features[index].x;
+                    s32 y = support_features[index].y;
+                    glVertex2f(x, y);
+                }
+                glEnd();
+
+                glLineWidth(8.0f);
+                glBegin(GL_LINES);
+                glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+                glVertex2f(x0, y0);
+                glVertex2f(x1, y1);
+                glEnd();
+                SliderInt("visible", &visible_count, 0, support_features_count-1);
+                Text("%.2f", entries[visible_count].key);
+            });
+        }
+        #endif
 
         // Note(Simen): Attempt to fit lines to their voting neighborhood
         // via linear least-squares. I do two versions of the minimization,
@@ -895,8 +1017,10 @@ void asc_find_lines(
                 for (s32 ri = 0; ri < bins_r; ri++)
                 for (s32 ti = 0; ti < bins_t; ti++)
                 {
-                    r32 r = histogram[ti + ri*bins_t].avg_r;
-                    r32 t = histogram[ti + ri*bins_t].avg_t;
+                    r32 r = r_min + (r_max-r_min)*ri/bins_r;
+                    r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                    // r32 r = histogram[ti + ri*bins_t].avg_r;
+                    // r32 t = histogram[ti + ri*bins_t].avg_t;
                     s32 count = histogram[ti + ri*bins_t].count;
 
                     if (mouse_ti == ti && mouse_ri == ri)
@@ -929,7 +1053,7 @@ void asc_find_lines(
                     if (ti < 0)
                     {
                         write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
-                        write_r = asci_clamp_s32(bins_r-ri, 0, bins_r-1);
+                        write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
                     }
                     else if (ti >= bins_t)
                     {
@@ -971,19 +1095,14 @@ void asc_find_lines(
             Ortho(0.0f, in_width, 0.0f, in_height);
             glLineWidth(5.0f);
             glBegin(GL_LINES);
-            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            if (square_error < normal_error_threshold)
+                glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            else
+                glColor4f(0.2f, 0.2f, 0.2f, 1.0f);
             glVertex2f(x0, y0);
             glVertex2f(x1, y1);
             glEnd();
 
-            s32 ti0 = asci_clamp_s32(peak_ti - suppression_window_ti/2, 0, bins_t-1);
-            s32 ti1 = asci_clamp_s32(peak_ti + suppression_window_ti/2, 0, bins_t-1);
-            s32 ri0 = asci_clamp_s32(peak_ri - suppression_window_ri/2, 0, bins_r-1);
-            s32 ri1 = asci_clamp_s32(peak_ri + suppression_window_ri/2, 0, bins_r-1);
-            r32 t0 = t_min + (t_max-t_min)*ti0/bins_t;
-            r32 r0 = r_min + (r_max-r_min)*ri0/bins_r;
-            r32 t1 = t_min + (t_max-t_min)*ti1/bins_t;
-            r32 r1 = r_min + (r_max-r_min)*ri1/bins_r;
             BlendMode(GL_ONE, GL_ONE);
             glPointSize(4.0f);
             glBegin(GL_POINTS);
@@ -1015,7 +1134,7 @@ void asc_find_lines(
                 // by gluing (0, r_min)-(0, r_max) with
                 // (pi, r_max)-(pi, r_min)
                 write_t = asci_clamp_s32(ti+bins_t, 0, bins_t-1);
-                write_r = asci_clamp_s32(bins_r-ri, 0, bins_r-1);
+                write_r = asci_clamp_s32(bins_r-1-ri, 0, bins_r-1);
             }
             else if (ti >= bins_t)
             {
