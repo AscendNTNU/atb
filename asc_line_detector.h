@@ -97,10 +97,15 @@
 //   Controls the minimum number of votes a peak must have to
 //   pass as a detected line. Specified as a fraction of the max
 //   count in the Hough space.
-// normal_error_threshold
-//   I reject lines whose supporting neighborhood of features have
-//   a squared perpendicular distance to the line greater than this
-//   threshold.
+// normal_error_threshold, normal_error_std_threshold
+//   I use two error metrics to decide which lines to keep, based
+//   on the votes that supported any given line:
+//     1) Mean normal distance to the line taken over the votes
+//     2) Standard deviation of the normal distance
+//   normal_error_threshold denotes the maximum value of the
+//   mean distance to be accepted. normal_error_var_threshold
+//   denotes the maximum value of the standard deviation for
+//   the line to be accepted. Both of these are in unit pixels.
 //
 // Licence
 // ------------------------------------------------------------------------
@@ -167,7 +172,8 @@ void asc_find_lines(
     float      param_suppression_window_t = 0.349f,
     float      param_suppression_window_r = 300.0f,
     float      param_peak_exit_threshold = 0.1f,
-    float      param_normal_error_threshold = 1200.0f);
+    float      param_normal_error_threshold = 20.0f,
+    float      param_normal_error_std_threshold = 15.0f);
 
 #endif
 
@@ -590,7 +596,8 @@ void asc_find_lines(
     r32 suppression_window_t,
     r32 suppression_window_r,
     r32 peak_exit_threshold,
-    r32 normal_error_threshold)
+    r32 normal_error_threshold,
+    r32 normal_error_std_threshold)
 {
     asci_Feature *features = (asci_Feature*)calloc(in_width*in_height, sizeof(asci_Feature)); // @ Static allocation
     s32 feature_count = 0;
@@ -602,23 +609,13 @@ void asc_find_lines(
         features,
         &feature_count);
 
-    GDB("sobel features",
+    GDB_SKIP("sobel features",
     {
         Ortho(0.0f, in_width, in_height, 0.0f);
         glPointSize(2.0f);
         Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        BlendMode();
         glBegin(GL_POINTS);
-        {
-            for (int i = 0; i < feature_count; i++)
-            {
-                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-                glVertex2f(features[i].x, features[i].y);
-            }
-        }
-        glEnd();
-
-        glLineWidth(1.0f);
-        glBegin(GL_LINES);
         {
             for (int i = 0; i < feature_count; i++)
             {
@@ -627,9 +624,9 @@ void asc_find_lines(
                 r32 gy = (r32)features[i].gy/gg;
                 r32 x = (r32)features[i].x;
                 r32 y = (r32)features[i].y;
+
                 glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
                 glVertex2f(x, y);
-                glVertex2f(x+gx*0.5f, y+gy*0.5f);
             }
         }
         glEnd();
@@ -1008,24 +1005,31 @@ void asc_find_lines(
             }
         }
 
-        // Compute the average squared normal distance to the line
-        r32 square_error = 0.0f; // @ Error metrics
+        // Compute some error metrics on the line quality
+        r32 normal_error_mean = 0.0f;
+        r32 normal_error_std = 0.0f;
+        if (neighbor_count > 0)
         {
+            r32 mean_sum = 0.0f;
+            r32 var_sum = 0.0f;
             for (s32 i = 0; i < neighbor_count; i++)
             {
                 asci_Vote vote = neighbor_votes[i];
                 r32 d1 = normal_x*vote.x1 + normal_y*vote.y1 - line_r;
                 r32 d2 = normal_x*vote.x2 + normal_y*vote.y2 - line_r;
-                d1 *= d1;
-                d2 *= d2;
-                square_error += d1+d2;
+                r32 e1 = abs(d1);
+                r32 e2 = abs(d2);
+                mean_sum += e1 + e2;
+                var_sum += e1*e1 + e2*e2; // @ Numerical stability
             }
-            if (neighbor_count > 0)
-                square_error /= (r32)(2*neighbor_count);
+            r32 N = (r32)(2*neighbor_count);
+            normal_error_mean = mean_sum/N;
+            normal_error_std = sqrt((var_sum/N) - normal_error_mean*normal_error_mean);
         }
 
         // Reject line based on the error metric computed above
-        if (square_error < normal_error_threshold) // @ Altitude-based threshold
+        if (normal_error_mean < normal_error_threshold &&
+            normal_error_std < normal_error_std_threshold) // @ Altitude-based threshold
         {
             out_lines[lines_found].t = peak_t;
             out_lines[lines_found].r = peak_r;
@@ -1128,7 +1132,8 @@ void asc_find_lines(
             Ortho(0.0f, in_width, 0.0f, in_height);
             glLineWidth(5.0f);
             glBegin(GL_LINES);
-            if (square_error < normal_error_threshold)
+            if (normal_error_mean < normal_error_threshold &&
+                normal_error_std < normal_error_std_threshold)
                 glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
             else
                 glColor4f(0.2f, 0.2f, 0.2f, 1.0f);
@@ -1147,12 +1152,12 @@ void asc_find_lines(
                 glVertex2f(vote.x2, vote.y2);
             }
             glEnd();
-            Text("Square error: %.2f\nCount: %d", square_error, neighbor_count);
+            Text("mean: %.2f\nvar: %.2f\ncount: %d",
+                 normal_error_mean, normal_error_std, neighbor_count);
         });
 
         // Zero the histogram count of votes inside the suppression window
         {
-            // @ Suppression window wrapping
             s32 ti0 = peak_ti - window_len_t/2;
             s32 ti1 = peak_ti + window_len_t/2;
             s32 ri0 = peak_ri - window_len_r/2;
@@ -1209,12 +1214,13 @@ void asc_find_lines(
 //   response. Need to either have altitude-based threshold, or use a different
 //   error metric. For example, also consider normal distance variance.
 
-// @ Suppression window wrapping
-//   This is currently not correct if t_min and t_max != 0 and pi.
-
 // @ Least-square fitting
 //   Currently disabled because it works badly in the presence of outliers.
 //   Want to atleast partially prune lines before performing minimzation.
+//   Want to do some sort of prepass where we look at gaps and outliers...?
+//   Prepass RANSAC on x0,y0,x1,y1?
+//     Count inliers, outliers (positive detections outside line, and negative
+//     detections inside line... somehow?)
 
 // @ Better neighborhood collection
 //   We have a tradeoff between rejecting votes that have large spatial
@@ -1222,9 +1228,6 @@ void asc_find_lines(
 //   the fitness of the line in the end. Jfr. image video0042.
 //   This might be fixed by using error metrics for rejection, such as
 //   variance _and_ average normal error.
-
-// @ Error metrics
-//   Want to use better error metrics for deciding which lines to reject.
 
 // @ Wrapping
 //   How do we correctly wrap rt's? If t_min, t_max != 0 and pi...?
