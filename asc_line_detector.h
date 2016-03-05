@@ -740,24 +740,79 @@ void asc_find_lines(
         static asci_Vote neighbor_votes[ASCI_MAX_VOTES];
         s32 neighbor_count = 0;
         {
-            s32 ti0 = peak_ti - window_len_t/2;
-            s32 ti1 = peak_ti + window_len_t/2;
-            s32 ri0 = peak_ri - window_len_r/2;
-            s32 ri1 = peak_ri + window_len_r/2;
-            r32 t0 = ASCI_TI_TO_T(ti0);
-            r32 t1 = ASCI_TI_TO_T(ti1);
-            r32 r0 = ASCI_RI_TO_R(ri0);
-            r32 r1 = ASCI_RI_TO_R(ri1);
-            // @ Wrapping
+            r32 t0 = peak_t - suppression_window_t/2.0f;
+            r32 t1 = peak_t + suppression_window_t/2.0f;
+            r32 r0 = peak_r - suppression_window_r/2.0f;
+            r32 r1 = peak_r + suppression_window_r/2.0f;
+            bool right_edge_clip = false;
+            if (t0 < 0.0f)
+            {
+                t0 += ASCI_PI;
+            }
+            if (t1 > ASCI_PI)
+            {
+                t1 -= ASCI_PI;
+                right_edge_clip = true;
+            }
             for (s32 i = 0; i < vote_count; i++)
             {
                 asci_Vote vote = votes[i];
+
+                // Since angles wrap _and_ the distance negates as a result,
+                // we need to do a little dance to determine if the vote is
+                // inside the selection window.
                 bool within_t = false;
                 bool within_r = false;
-                within_t = (t0 < t1 && (vote.t >= t0 && vote.t <= t1)) ||
-                           (t1 < t0 && (vote.t >= t0 || vote.t <= t1));
-                within_r = (r0 < r1 && (vote.r >= r0 && vote.r <= r1)) ||
-                           (r1 < r0 && (vote.r >= r0 || vote.r <= r1));
+                if (t0 < t1)
+                {
+                    if (vote.t >= t0 && vote.t <= t1)
+                    {
+                        within_t = true;
+                        if (vote.r >= r0 && vote.r <= r1)
+                        {
+                            within_r = true;
+                        }
+                    }
+                }
+                else if (right_edge_clip)
+                {
+                    if (vote.t <= t1)
+                    {
+                        within_t = true;
+                        if (vote.r >= -r1 && vote.r <= -r0)
+                        {
+                            within_r = true;
+                        }
+                    }
+                    else if (vote.t >= t0)
+                    {
+                        within_t = true;
+                        if (vote.r >= r0 && vote.r <= r1)
+                        {
+                            within_r = true;
+                        }
+                    }
+                }
+                else
+                {
+                    if (vote.t <= t1)
+                    {
+                        within_t = true;
+                        if (vote.r >= r0 && vote.r <= r1)
+                        {
+                            within_r = true;
+                        }
+                    }
+                    else if (vote.t >= t0)
+                    {
+                        within_t = true;
+                        if (vote.r >= -r1 && vote.r <= -r0)
+                        {
+                            within_r = true;
+                        }
+                    }
+                }
+
                 if (within_t && within_r)
                 {
                     r32 d1 = peak_normal_x*vote.x1 + peak_normal_y*vote.y1 - peak_r;
@@ -922,7 +977,6 @@ void asc_find_lines(
                 ls_r = b*sin(ls_t);
             }
         }
-
         r32 line_t = ls_t;
         r32 line_r = ls_r;
         #else
