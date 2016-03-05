@@ -178,10 +178,7 @@ void asc_find_lines(
 #include <stdlib.h>
 #include <math.h>
 #define ASCI_PI 3.1415926f
-#define ASCI_FLT_MAX 3.402823466e+38F
 #define ASCI_MAX_VOTES (4096*8)
-#define ASCI_MAX_WIDTH (1920)
-#define ASCI_MAX_HEIGHT (1080)
 #define s32 int32_t
 #define s16 int16_t
 #define s08 int8_t
@@ -320,8 +317,7 @@ void asci_sobel(
             _mm_storeu_si128((__m128i*)dst_positive_y, positive_y);
             _mm_storeu_si128((__m128i*)dst_negative_y, negative_y);
 
-            // TODO: Compute average? Compute sum?
-            // Skip pushing entire block if almost all lt 10
+            // @ SIMD Sobel
 
             for (s32 dx = 0; dx < 16; dx++)
             {
@@ -434,58 +430,46 @@ void asci_hough(
     asci_Feature *in_features,
     s32 in_feature_count,
     s32 sample_count,
+    s32 in_width,
+    s32 in_height,
     asci_Vote *out_votes,
     s32 *out_count,
-    r32 *out_t_min,
-    r32 *out_t_max,
     r32 *out_r_min,
     r32 *out_r_max)
 {
     if (in_feature_count == 0)
     {
         *out_count = 0;
-        *out_t_min = 0;
-        *out_t_max = 0;
-        *out_r_min = 0;
-        *out_r_max = 0;
-        return;
-    }
-    r32 t_min = ASCI_FLT_MAX;
-    r32 t_max = -ASCI_FLT_MAX;
-    r32 r_min = ASCI_FLT_MAX;
-    r32 r_max = -ASCI_FLT_MAX;
-    s32 count = 0;
-
-    r32 rejection_threshold = 0.5f;
-
-    if (in_feature_count == 0)
-    {
-        *out_count = 0;
-        *out_t_min = 0.0f;
-        *out_t_max = 0.0f;
         *out_r_min = 0.0f;
         *out_r_max = 0.0f;
         return;
     }
 
+    // Initialize min and max values to their opposite bounds
+    r32 r_max = -sqrt((r32)(in_width*in_width+in_height*in_height));
+    r32 r_min = -r_max;
+
+    s32 count = 0;
+    r32 rejection_threshold = 0.5f;
     for (s32 sample = 0; sample < sample_count; sample++)
     {
+        // Draw two random features (edges) from the image
         s32 sample_i1 = asci_xor128() % (in_feature_count);
         s32 sample_i2 = asci_xor128() % (in_feature_count);
         asci_Feature f1 = in_features[sample_i1];
         asci_Feature f2 = in_features[sample_i2];
 
-        // Note(Simen): I reject a vote if the gradients of
-        // the drawn samples differ more than a threshold.
-        if (f1.gg > 0 && f2.gg > 0)
+        // Reject the samples if the gradients differ too much
         {
             r32 dot = f1.gx*f2.gx + f1.gy*f2.gy;
-            if (abs(dot) < rejection_threshold*f1.gg*f2.gg)
+            if (abs(dot) <= rejection_threshold*f1.gg*f2.gg)
             {
                 continue;
             }
         }
 
+        // Compute the angle of the normal (t) of the line drawn
+        // between the two samples
         r32 t;
         s32 dx = f2.x - f1.x;
         s32 dy = f2.y - f1.y;
@@ -500,25 +484,23 @@ void asci_hough(
         r32 c = cos(t);
         r32 s = sin(t);
 
-        // Note(Simen): I also reject a vote if the normal of
-        // the line drawn between the samples differs from the
-        // gradients of the samples by more than a threshold.
-        if (f1.gg > 0 && f2.gg > 0)
+        // Reject the samples if the normal of the connecting line
+        // differs from the gradients of the samples too much
+        if (f1.gg > 0 && f2.gg > 0) // Should not need this check
         {
             r32 dot1 = (f1.gx*c+f1.gy*s) / f1.gg;
             r32 dot2 = (f2.gx*c+f2.gy*s) / f2.gg;
             r32 adot = 0.5f*(abs(dot1) + abs(dot2));
-            if (adot < rejection_threshold)
+            if (adot <= rejection_threshold)
             {
                 continue;
             }
         }
 
+        // Compute the line's distance to the origin
         r32 r = f1.x*c + f1.y*s;
-        if (r < r_min) r_min = r;
         if (r > r_max) r_max = r;
-        if (t < t_min) t_min = t;
-        if (t > t_max) t_max = t;
+        if (r < r_min) r_min = r;
 
         asci_Vote vote = {0};
         vote.t = t;
@@ -534,8 +516,6 @@ void asci_hough(
         out_votes[count++] = vote;
     }
 
-    *out_t_min = t_min;
-    *out_t_max = t_max;
     *out_r_min = r_min;
     *out_r_max = r_max;
     *out_count = count;
@@ -612,8 +592,7 @@ void asc_find_lines(
     r32 peak_exit_threshold,
     r32 normal_error_threshold)
 {
-    // @ Static allocation
-    asci_Feature *features = (asci_Feature*)calloc(in_width*in_height, sizeof(asci_Feature));
+    asci_Feature *features = (asci_Feature*)calloc(in_width*in_height, sizeof(asci_Feature)); // @ Static allocation
     s32 feature_count = 0;
     asci_sobel(
         in_gray,
@@ -662,21 +641,20 @@ void asc_find_lines(
         return;
     }
 
-    // @ Static allocation
-    asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote));
+    asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote)); // @ Static allocation
     s32 vote_count = 0;
-    r32 t_min = 0.0f;
-    r32 t_max = 0.0f;
     r32 r_min = 0.0f;
     r32 r_max = 0.0f;
     asci_hough(
         features,
         feature_count,
         sample_count,
+        in_width,
+        in_height,
         votes,
         &vote_count,
-        &t_min, &t_max,
-        &r_min, &r_max);
+        &r_min,
+        &r_max);
 
     if (vote_count == 0)
     {
@@ -684,26 +662,23 @@ void asc_find_lines(
         return;
     }
 
-    // I need to ensure that the ranges t_max-t_min and r_max-r_min
-    // atleast as large as the suppression windows, since I iterate
-    // over the neighborhoods later. If they are zero, it means that
-    // we either found nothing, or that we only found one type of line.
-    // @ Wrapping
-    if (abs(t_max-t_min) < suppression_window_t*1.25f)
-    {
-        t_max = suppression_window_t*1.25f;
-        t_min = 0.0f;
-    }
+    // I need to ensure that r_max-r_min atleast as large as the suppression
+    // window, since I iterate over the window later. If the range is zero,
+    // it means that we either found nothing, or that we only found one type
+    // of line.
     if (abs(r_max-r_min) < suppression_window_r*2.5f)
     {
         r_max = (suppression_window_r/2.0f)*1.25f;
         r_min = -r_max;
     }
 
+    // Quantize the line parameter votes into a histogram
     const s32 bins_t = 32;
     const s32 bins_r = 32;
     static asci_HoughCell histogram[bins_t*bins_r];
     s32 histogram_max_count = 0;
+    r32 t_min = 0.0f;
+    r32 t_max = ASCI_PI;
     asci_hough_histogram(
         histogram,
         bins_t,
@@ -714,13 +689,21 @@ void asc_find_lines(
         vote_count,
         &histogram_max_count);
 
+    // Compute the suppression window dimensions in number of histogram cells
+    s32 window_len_t = 0;
+    s32 window_len_r = 0;
+    {
+        r32 bin_size_t = (t_max-t_min) / bins_t;
+        r32 bin_size_r = (r_max-r_min) / bins_r;
+        window_len_t = asci_round_positive(suppression_window_t / bin_size_t);
+        window_len_r = asci_round_positive(suppression_window_r / bin_size_r);
+        if (window_len_t % 2 != 0) window_len_t++;
+        if (window_len_r % 2 != 0) window_len_r++;
+        window_len_t = asci_clamp_s32(window_len_t, 0, bins_t-1);
+        window_len_r = asci_clamp_s32(window_len_r, 0, bins_r-1);
+    }
+
     s32 lines_found = 0;
-    r32 bin_size_t = (t_max-t_min) / bins_t;
-    r32 bin_size_r = (r_max-r_min) / bins_r;
-    s32 suppression_window_ti = asci_round_positive(suppression_window_t / bin_size_t);
-    s32 suppression_window_ri = asci_round_positive(suppression_window_r / bin_size_r);
-    if (suppression_window_ti % 2 != 0) suppression_window_ti++;
-    if (suppression_window_ri % 2 != 0) suppression_window_ri++;
     for (s32 iteration = 0; iteration < max_out_count; iteration++)
     {
         // Extract max
@@ -735,11 +718,13 @@ void asc_find_lines(
             }
         }
 
+        // Early-exit if the peak count was less than a threshold
         if (peak_count <= peak_exit_threshold*histogram_max_count)
         {
             break;
         }
 
+        // @ Experimental
         const s32 MAX_SUPPORT_FEATURES_COUNT = 4096*8;
         static asci_Feature support_features[MAX_SUPPORT_FEATURES_COUNT];
         s32 support_features_count = 0;
@@ -755,10 +740,10 @@ void asc_find_lines(
         static asci_Vote neighbor_votes[ASCI_MAX_VOTES];
         s32 neighbor_count = 0;
         {
-            s32 ti0 = peak_ti - suppression_window_ti/2;
-            s32 ti1 = peak_ti + suppression_window_ti/2;
-            s32 ri0 = peak_ri - suppression_window_ri/2;
-            s32 ri1 = peak_ri + suppression_window_ri/2;
+            s32 ti0 = peak_ti - window_len_t/2;
+            s32 ti1 = peak_ti + window_len_t/2;
+            s32 ri0 = peak_ri - window_len_r/2;
+            s32 ri1 = peak_ri + window_len_r/2;
             r32 t0 = ASCI_TI_TO_T(ti0);
             r32 t1 = ASCI_TI_TO_T(ti1);
             r32 r0 = ASCI_RI_TO_R(ri0);
@@ -800,7 +785,7 @@ void asc_find_lines(
             }
         }
 
-        // This is very experimental and will be removed soon.
+        // @ Experimental
         #if 0
         {
             r32 x0, y0, x1, y1;
@@ -1035,10 +1020,10 @@ void asc_find_lines(
             glBegin(GL_POINTS);
             glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
             {
-                s32 ti0 = peak_ti - suppression_window_ti/2;
-                s32 ti1 = peak_ti + suppression_window_ti/2;
-                s32 ri0 = peak_ri - suppression_window_ri/2;
-                s32 ri1 = peak_ri + suppression_window_ri/2;
+                s32 ti0 = peak_ti - window_len_t/2;
+                s32 ti1 = peak_ti + window_len_t/2;
+                s32 ri0 = peak_ri - window_len_r/2;
+                s32 ri1 = peak_ri + window_len_r/2;
                 for (s32 ti = ti0; ti <= ti1; ti++)
                 for (s32 ri = ri0; ri <= ri1; ri++)
                 {
@@ -1114,10 +1099,10 @@ void asc_find_lines(
         // Zero the histogram count of votes inside the suppression window
         {
             // @ Suppression window wrapping
-            s32 ti0 = peak_ti - suppression_window_ti/2;
-            s32 ti1 = peak_ti + suppression_window_ti/2;
-            s32 ri0 = peak_ri - suppression_window_ri/2;
-            s32 ri1 = peak_ri + suppression_window_ri/2;
+            s32 ti0 = peak_ti - window_len_t/2;
+            s32 ti1 = peak_ti + window_len_t/2;
+            s32 ri0 = peak_ri - window_len_r/2;
+            s32 ri1 = peak_ri + window_len_r/2;
             for (s32 ti = ti0; ti <= ti1; ti++)
             for (s32 ri = ri0; ri <= ri1; ri++)
             {
@@ -1191,3 +1176,7 @@ void asc_find_lines(
 //   How do we correctly wrap rt's? If t_min, t_max != 0 and pi...?
 //   Do we just *=-1 the r's? Do we want to set t_min and t_max to
 //   just always be 0 and pi, but let r_min and r_max dynamically size?
+
+// @ SIMD Sobel
+//   Compute average? Compute sum?
+//   Skip pushing entire block if almost all less than threshold
