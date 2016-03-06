@@ -31,18 +31,22 @@ unsigned char *rgb_to_gray(unsigned char *in, int w, int h)
 int main(int argc, char **argv)
 {
     int width, height, channels;
-    unsigned char *input_rgb = stbi_load("data/video0040.jpg", &width, &height, &channels, 3);
+    unsigned char *input_rgb = stbi_load("data/video0025.jpg", &width, &height, &channels, 3);
     unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
 
     asc_LineDetectorOptions options;
     options.sobel_threshold            = 10;
     options.hough_sample_count         = 4096;
     options.suppression_window_t       = 0.349f;
-    options.suppression_window_r       = 300.0f;
+    options.suppression_window_r       = 200.0f;
     options.peak_exit_threshold        = 0.1f;
-    options.normal_error_threshold     = 20.0f;
-    options.normal_error_std_threshold = 15.0f;
-    options.correct_fisheye            = false;
+    options.normal_error_threshold     = 25.0f;
+    options.normal_error_std_threshold = 25.0f;
+
+    options.correct_fisheye            = true;
+    options.fisheye_radius             = 1470.0f/2.0f;
+    options.fisheye_fov                = 3.14f;
+    options.pinhole_fov_x              = 3.14f/1.25f;
 
     const int max_lines = 16;
     asc_Line lines[max_lines];

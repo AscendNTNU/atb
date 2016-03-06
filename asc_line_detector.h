@@ -164,7 +164,8 @@ struct asc_LineDetectorOptions
     float normal_error_std_threshold;
 
     bool correct_fisheye;
-    float fisheye_radius; // Distance in pixels of the fisheye lens
+    float fisheye_radius; // Distance in pixels of the fisheye lens radius
+                          // (The lens perimeter is usually visible near the edges as a black region)
     float fisheye_fov;    // Field of view of the fisheye lens (e.g. 180 degrees)
     float pinhole_fov_x;  // Desired horizontal field of view of the pinhole projection
 };
