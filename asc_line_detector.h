@@ -443,6 +443,110 @@ r32 asci_max(r32 x, r32 y)
     else return y;
 }
 
+void asci_fisheye_undistort(
+    asci_Feature *features,
+    s32 feature_count,
+    s32 in_width,
+    s32 in_height)
+{
+    GDB("fisheye",
+    {
+        // static r32 f = 0.997f;
+        // static r32 scale = 0.479f;
+        // static r32 rx = 1.292f;
+        // static r32 ry = 1.095f;
+
+        static r32 fd = 0.99304f;
+        static r32 scale = 0.479f;
+        static r32 rx = 1.341f;
+        static r32 ry = 1.075f;
+        static r32 tcap = ASCI_PI/2.2f;
+
+        glLineWidth(1.0f);
+        glPointSize(2.0f);
+        BlendMode();
+        Ortho(-1.0f, +1.0f, -1.0f, +1.0f);
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        glBegin(GL_POINTS);
+        for (s32 i = 0; i < feature_count; i += 16)
+        {
+            r32 xd = rx*(-1.0f + 2.0f * features[i].x/in_width);
+            r32 yd = ry*(-1.0f + 2.0f * features[i].y/in_height);
+            r32 rd = sqrt(xd*xd+yd*yd);
+            r32 theta = rd/fd;
+            if (theta > tcap) continue;
+            r32 ru = tan(theta); // project onto plane
+            r32 xu = scale*(xd/rd)*ru;
+            r32 yu = scale*(yd/rd)*ru;
+
+            r32 gg = (r32)features[i].gg;
+            r32 gx = (r32)features[i].gx/gg;
+            r32 gy = (r32)features[i].gy/gg;
+
+            glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
+            glVertex2f(xu, yu);
+        }
+        glEnd();
+
+        static bool draw_gradients = false;
+        if (draw_gradients)
+        {
+            glBegin(GL_LINES);
+            for (s32 i = 0; i < feature_count; i += 16)
+            {
+                r32 xd = rx*(-1.0f + 2.0f * features[i].x/in_width);
+                r32 yd = ry*(-1.0f + 2.0f * features[i].y/in_height);
+                r32 rd = sqrt(xd*xd+yd*yd);
+                r32 theta = rd/fd;
+                if (theta > tcap) continue;
+                r32 ru = tan(theta); // project onto plane
+                r32 xu = scale*(xd/rd)*ru;
+                r32 yu = scale*(yd/rd)*ru;
+
+                r32 gg = (r32)features[i].gg;
+                r32 gx = (r32)features[i].gx/gg;
+                r32 gy = (r32)features[i].gy/gg;
+
+                glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
+                glVertex2f(xu, yu);
+                glVertex2f(xu+scale*gx/16.0f, yu+scale*gy/16.0f);
+            }
+            glEnd();
+        }
+
+        SliderFloat("scale", &scale, 0.1f, 1.0f);
+        SliderFloat("rx", &rx, 0.2f, 2.0f);
+        SliderFloat("ry", &ry, 0.2f, 2.0f);
+        SliderFloat("fd", &fd, 0.2f, 2.0f);
+        SliderAngle("tcap", &tcap);
+        Checkbox("Draw gradients", &draw_gradients);
+    });
+
+    {
+        r32 fd = 0.99304f;
+        r32 scale = 0.479f;
+        r32 rx = 1.341f;
+        r32 ry = 1.075f;
+        r32 tcap = ASCI_PI/2.2f;
+
+        for (s32 i = 0; i < feature_count; i++)
+        {
+            r32 xd = rx*(-1.0f + 2.0f * features[i].x/in_width);
+            r32 yd = ry*(-1.0f + 2.0f * features[i].y/in_height);
+            r32 rd = sqrt(xd*xd+yd*yd);
+            r32 theta = rd/fd;
+            if (theta > tcap) continue;
+            r32 ru = tan(theta);
+            r32 xu = (0.5f+0.5f*scale*(xd/rd)*ru)*in_width;
+            r32 yu = (0.5f+0.5f*scale*(yd/rd)*ru)*in_height;
+            features[i].x = asci_round_positive(xu);
+            features[i].y = asci_round_positive(yu);
+        }
+    }
+
+    // @ Gradient fisheye distortion
+}
+
 struct asci_Vote
 {
     s32 x1;
@@ -630,9 +734,9 @@ void asc_find_lines(
         features,
         &feature_count);
 
-    GDB_SKIP("sobel features",
+    GDB("sobel features",
     {
-        Ortho(0.0f, in_width, in_height, 0.0f);
+        Ortho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
         Clear(0.0f, 0.0f, 0.0f, 1.0f);
         BlendMode();
@@ -658,6 +762,8 @@ void asc_find_lines(
         *out_count = 0;
         return;
     }
+
+    asci_fisheye_undistort(features, feature_count, in_width, in_height);
 
     // @ Warn about parameters
     if (options.hough_sample_count > ASCI_MAX_VOTE_COUNT)
@@ -1211,6 +1317,39 @@ void asc_find_lines(
         }
     }
 
+    GDB("final lines", {
+        Ortho(0.0f, in_width, in_height, 0.0f);
+        glPointSize(2.0f);
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        BlendMode();
+        glBegin(GL_POINTS);
+        {
+            for (int i = 0; i < feature_count; i++)
+            {
+                r32 gg = (r32)features[i].gg;
+                r32 gx = (r32)features[i].gx/gg;
+                r32 gy = (r32)features[i].gy/gg;
+                r32 x = (r32)features[i].x;
+                r32 y = (r32)features[i].y;
+
+                glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
+                glVertex2f(x, y);
+            }
+        }
+        glEnd();
+
+        glLineWidth(5.0f);
+        glBegin(GL_LINES);
+        for (s32 i = 0; i < lines_found; i++)
+        {
+            asc_Line line = out_lines[i];
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            glVertex2f(line.x_min, line.y_min);
+            glVertex2f(line.x_max, line.y_max);
+        }
+        glEnd();
+    });
+
     *out_count = lines_found;
 }
 
@@ -1225,9 +1364,6 @@ void asc_find_lines(
 
 
 // Todo list
-// @ Static allocation:
-//   The library has many unecessary dynamic allocations per call.
-//   Replace these with static allocators, or perhaps user-side allocations.
 
 // @ Altitude-based threshold:
 //   Rejection based on squared normal distance alone will not be robust
