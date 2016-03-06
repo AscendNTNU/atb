@@ -148,13 +148,24 @@ struct asc_Line
     float color_b;
 };
 
+struct asc_LineDetectorOptions
+{
+    int16_t sobel_threshold;
+    int32_t hough_sample_count;
+    float suppression_window_t;
+    float suppression_window_r;
+    float peak_exit_threshold;
+    float normal_error_threshold;
+    float normal_error_std_threshold;
+};
+
 // in_rgb
 //   A densily packed array of 8bit RGB values
 // in_gray
 //   A densily packed array of 8bit grayscale values
 // in_width, in_height
 //   Width and height of in_rgb and in_gray.
-// out_lines, param_max_out_count
+// out_lines, max_out_count
 //   The resulting list of lines found. You allocate this.
 //   The list will be filled with at most max_out_count elements.
 // out_count
@@ -166,14 +177,8 @@ void asc_find_lines(
     int32_t    in_height,
     asc_Line  *out_lines,
     int32_t   *out_count,
-    int32_t    param_max_out_count,
-    int16_t    param_sobel_threshold = 10,
-    int32_t    param_hough_sample_count = 4096,
-    float      param_suppression_window_t = 0.349f,
-    float      param_suppression_window_r = 300.0f,
-    float      param_peak_exit_threshold = 0.1f,
-    float      param_normal_error_threshold = 20.0f,
-    float      param_normal_error_std_threshold = 15.0f);
+    int32_t    max_out_count,
+    asc_LineDetectorOptions options);
 
 #endif
 
@@ -184,7 +189,9 @@ void asc_find_lines(
 #include <stdlib.h>
 #include <math.h>
 #define ASCI_PI 3.1415926f
-#define ASCI_MAX_VOTES (4096*8)
+#define ASCI_MAX_WIDTH (1920)
+#define ASCI_MAX_HEIGHT (1080)
+#define ASCI_MAX_VOTE_COUNT (4096*8)
 #define s32 int32_t
 #define s16 int16_t
 #define s08 int8_t
@@ -591,21 +598,17 @@ void asc_find_lines(
     asc_Line *out_lines,
     s32 *out_count,
     s32 max_out_count,
-    s16 sobel_threshold,
-    s32 sample_count,
-    r32 suppression_window_t,
-    r32 suppression_window_r,
-    r32 peak_exit_threshold,
-    r32 normal_error_threshold,
-    r32 normal_error_std_threshold)
+    asc_LineDetectorOptions options)
 {
-    asci_Feature *features = (asci_Feature*)calloc(in_width*in_height, sizeof(asci_Feature)); // @ Static allocation
+    assert(in_width <= ASCI_MAX_WIDTH);
+    assert(in_height <= ASCI_MAX_HEIGHT);
+    static asci_Feature features[ASCI_MAX_WIDTH*ASCI_MAX_HEIGHT];
     s32 feature_count = 0;
     asci_sobel(
         in_gray,
         in_width,
         in_height,
-        sobel_threshold,
+        options.sobel_threshold,
         features,
         &feature_count);
 
@@ -638,14 +641,17 @@ void asc_find_lines(
         return;
     }
 
-    asci_Vote *votes = (asci_Vote*)calloc(sample_count, sizeof(asci_Vote)); // @ Static allocation
+    // @ Warn about parameters
+    if (options.hough_sample_count > ASCI_MAX_VOTE_COUNT)
+        options.hough_sample_count = ASCI_MAX_VOTE_COUNT;
+    static asci_Vote votes[ASCI_MAX_VOTE_COUNT];
     s32 vote_count = 0;
     r32 r_min = 0.0f;
     r32 r_max = 0.0f;
     asci_hough(
         features,
         feature_count,
-        sample_count,
+        options.hough_sample_count,
         in_width,
         in_height,
         votes,
@@ -663,9 +669,9 @@ void asc_find_lines(
     // window, since I iterate over the window later. If the range is zero,
     // it means that we either found nothing, or that we only found one type
     // of line.
-    if (abs(r_max-r_min) < suppression_window_r*2.5f)
+    if (abs(r_max-r_min) < options.suppression_window_r*2.5f)
     {
-        r_max = (suppression_window_r/2.0f)*1.25f;
+        r_max = (options.suppression_window_r/2.0f)*1.25f;
         r_min = -r_max;
     }
 
@@ -692,8 +698,8 @@ void asc_find_lines(
     {
         r32 bin_size_t = (t_max-t_min) / bins_t;
         r32 bin_size_r = (r_max-r_min) / bins_r;
-        window_len_t = asci_round_positive(suppression_window_t / bin_size_t);
-        window_len_r = asci_round_positive(suppression_window_r / bin_size_r);
+        window_len_t = asci_round_positive(options.suppression_window_t / bin_size_t);
+        window_len_r = asci_round_positive(options.suppression_window_r / bin_size_r);
         if (window_len_t % 2 != 0) window_len_t++;
         if (window_len_r % 2 != 0) window_len_r++;
         window_len_t = asci_clamp_s32(window_len_t, 0, bins_t-1);
@@ -716,7 +722,7 @@ void asc_find_lines(
         }
 
         // Early-exit if the peak count was less than a threshold
-        if (peak_count <= peak_exit_threshold*histogram_max_count)
+        if (peak_count <= options.peak_exit_threshold*histogram_max_count)
         {
             break;
         }
@@ -734,13 +740,13 @@ void asc_find_lines(
         r32 peak_normal_y = sin(peak_t);
 
         // Collect the votes in a window around the peak.
-        static asci_Vote neighbor_votes[ASCI_MAX_VOTES];
+        static asci_Vote neighbor_votes[ASCI_MAX_VOTE_COUNT];
         s32 neighbor_count = 0;
         {
-            r32 t0 = peak_t - suppression_window_t/2.0f;
-            r32 t1 = peak_t + suppression_window_t/2.0f;
-            r32 r0 = peak_r - suppression_window_r/2.0f;
-            r32 r1 = peak_r + suppression_window_r/2.0f;
+            r32 t0 = peak_t - options.suppression_window_t/2.0f;
+            r32 t1 = peak_t + options.suppression_window_t/2.0f;
+            r32 r0 = peak_r - options.suppression_window_r/2.0f;
+            r32 r1 = peak_r + options.suppression_window_r/2.0f;
             bool right_edge_clip = false;
             if (t0 < 0.0f)
             {
@@ -1028,8 +1034,8 @@ void asc_find_lines(
         }
 
         // Reject line based on the error metric computed above
-        if (normal_error_mean < normal_error_threshold &&
-            normal_error_std < normal_error_std_threshold) // @ Altitude-based threshold
+        if (normal_error_mean < options.normal_error_threshold &&
+            normal_error_std < options.normal_error_std_threshold) // @ Altitude-based threshold
         {
             out_lines[lines_found].t = peak_t;
             out_lines[lines_found].r = peak_r;
@@ -1132,8 +1138,8 @@ void asc_find_lines(
             Ortho(0.0f, in_width, 0.0f, in_height);
             glLineWidth(5.0f);
             glBegin(GL_LINES);
-            if (normal_error_mean < normal_error_threshold &&
-                normal_error_std < normal_error_std_threshold)
+            if (normal_error_mean < options.normal_error_threshold &&
+                normal_error_std < options.normal_error_std_threshold)
                 glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
             else
                 glColor4f(0.2f, 0.2f, 0.2f, 1.0f);
@@ -1188,9 +1194,6 @@ void asc_find_lines(
     }
 
     *out_count = lines_found;
-
-    free(votes);
-    free(features);
 }
 
 #undef s32
