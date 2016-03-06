@@ -34,6 +34,15 @@ int main(int argc, char **argv)
     unsigned char *input_rgb = stbi_load("data/video0040.jpg", &width, &height, &channels, 3);
     unsigned char *input_gray = rgb_to_gray(input_rgb, width, height);
 
+    asc_LineDetectorOptions options;
+    options.sobel_threshold            = 10;
+    options.hough_sample_count         = 4096;
+    options.suppression_window_t       = 0.349f;
+    options.suppression_window_r       = 300.0f;
+    options.peak_exit_threshold        = 0.1f;
+    options.normal_error_threshold     = 20.0f;
+    options.normal_error_std_threshold = 20.0f;
+
     const int max_lines = 16;
     asc_Line lines[max_lines];
     int lines_found = 0;
@@ -44,7 +53,8 @@ int main(int argc, char **argv)
         height,
         lines,
         &lines_found,
-        max_lines);
+        max_lines,
+        options);
 
     printf("Found %d lines\n", lines_found);
     for (int i = 0; i < lines_found; i++)

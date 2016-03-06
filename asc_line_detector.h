@@ -185,9 +185,14 @@ void asc_find_lines(
 #ifdef ASC_LINE_DETECTOR_IMPLEMENTATION
 #ifndef USE_GDB
 #define GDB(arg1, arg2) ;
+#define GDB_SKIP(arg1, arg2) ;
 #endif
 #include <stdlib.h>
 #include <math.h>
+#ifndef ASCI_ASSERT
+#include <assert.h>
+#define ASCI_ASSERT assert
+#endif
 #define ASCI_PI 3.1415926f
 #define ASCI_MAX_WIDTH (1920)
 #define ASCI_MAX_HEIGHT (1080)
@@ -600,8 +605,8 @@ void asc_find_lines(
     s32 max_out_count,
     asc_LineDetectorOptions options)
 {
-    assert(in_width <= ASCI_MAX_WIDTH);
-    assert(in_height <= ASCI_MAX_HEIGHT);
+    ASCI_ASSERT(in_width <= ASCI_MAX_WIDTH);
+    ASCI_ASSERT(in_height <= ASCI_MAX_HEIGHT);
     static asci_Feature features[ASCI_MAX_WIDTH*ASCI_MAX_HEIGHT];
     s32 feature_count = 0;
     asci_sobel(
