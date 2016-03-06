@@ -41,8 +41,8 @@
 //
 // Changelog
 // ------------------------------------------------------------------------
-//   1.3 (06. mar 2016) Better error metrics for line rejection. You should
-//                      now get fewer spurious detections.
+//   1.3 (06. mar 2016) Better error metrics for line rejection.
+//                      Fisheye correction.
 //   1.2 (01. mar 2016) Bugfixes and robustification.
 //                      Empty or almost empty images are now handled in a
 //                      safer manner.
@@ -162,6 +162,11 @@ struct asc_LineDetectorOptions
     float peak_exit_threshold;
     float normal_error_threshold;
     float normal_error_std_threshold;
+
+    bool correct_fisheye;
+    float fisheye_radius; // Distance in pixels of the fisheye lens
+    float fisheye_fov;    // Field of view of the fisheye lens (e.g. 180 degrees)
+    float pinhole_fov_x;  // Desired horizontal field of view of the pinhole projection
 };
 
 // in_rgb
@@ -444,107 +449,74 @@ r32 asci_max(r32 x, r32 y)
 }
 
 void asci_fisheye_undistort(
-    asci_Feature *features,
-    s32 feature_count,
+    asci_Feature *in_features,
+    s32 in_count,
     s32 in_width,
-    s32 in_height)
+    s32 in_height,
+    asci_Feature *out_features,
+    s32 *out_count,
+    r32 fisheye_radius,
+    r32 fisheye_fov,
+    r32 pinhole_fov_x)
 {
+    r32 pinhole_f = (in_width/2.0f)/tan(pinhole_fov_x/2.0f);
+    s32 count = 0;
+    for (s32 i = 0; i < in_count; i++)
+    {
+        asci_Feature feature = in_features[i];
+        r32 xd = feature.x - in_width/2.0f;
+        r32 yd = feature.y - in_height/2.0f;
+        r32 rd = sqrt(xd*xd+yd*yd);
+        r32 theta = (fisheye_fov/2.0f)*rd/fisheye_radius;
+        if (theta > pinhole_fov_x/2.0f)
+            continue;
+        r32 ru = tan(theta);
+
+        r32 xu;
+        r32 yu;
+        if (rd > 1.0f)
+        {
+            xu = pinhole_f*(xd/rd)*ru;
+            yu = pinhole_f*(yd/rd)*ru;
+        }
+        else // Handle limit case in center
+        {
+            xu = pinhole_f*xd*ru;
+            yu = pinhole_f*yd*ru;
+        }
+
+        s32 ix = asci_round_positive(in_width/2.0f+xu);
+        s32 iy = asci_round_positive(in_height/2.0f+yu);
+
+        // @ Gradient fisheye distortion
+        feature.x = ix;
+        feature.y = iy;
+        out_features[count++] = feature;
+    }
+
     GDB("fisheye",
     {
-        // static r32 f = 0.997f;
-        // static r32 scale = 0.479f;
-        // static r32 rx = 1.292f;
-        // static r32 ry = 1.095f;
-
-        static r32 fd = 0.99304f;
-        static r32 scale = 0.479f;
-        static r32 rx = 1.341f;
-        static r32 ry = 1.075f;
-        static r32 tcap = ASCI_PI/2.2f;
-
         glLineWidth(1.0f);
         glPointSize(2.0f);
         BlendMode();
-        Ortho(-1.0f, +1.0f, -1.0f, +1.0f);
+        Ortho(0.0f, in_width, 0.0f, in_height);
         Clear(0.0f, 0.0f, 0.0f, 1.0f);
         glBegin(GL_POINTS);
-        for (s32 i = 0; i < feature_count; i += 16)
+        for (s32 i = 0; i < count; i += 16)
         {
-            r32 xd = rx*(-1.0f + 2.0f * features[i].x/in_width);
-            r32 yd = ry*(-1.0f + 2.0f * features[i].y/in_height);
-            r32 rd = sqrt(xd*xd+yd*yd);
-            r32 theta = rd/fd;
-            if (theta > tcap) continue;
-            r32 ru = tan(theta); // project onto plane
-            r32 xu = scale*(xd/rd)*ru;
-            r32 yu = scale*(yd/rd)*ru;
+            asci_Feature feature = out_features[i];
 
-            r32 gg = (r32)features[i].gg;
-            r32 gx = (r32)features[i].gx/gg;
-            r32 gy = (r32)features[i].gy/gg;
+            r32 gg = (r32)feature.gg;
+            r32 gx = (r32)feature.gx/gg;
+            r32 gy = (r32)feature.gy/gg;
 
             glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
-            glVertex2f(xu, yu);
+            glVertex2f(feature.x, feature.y);
         }
         glEnd();
-
-        static bool draw_gradients = false;
-        if (draw_gradients)
-        {
-            glBegin(GL_LINES);
-            for (s32 i = 0; i < feature_count; i += 16)
-            {
-                r32 xd = rx*(-1.0f + 2.0f * features[i].x/in_width);
-                r32 yd = ry*(-1.0f + 2.0f * features[i].y/in_height);
-                r32 rd = sqrt(xd*xd+yd*yd);
-                r32 theta = rd/fd;
-                if (theta > tcap) continue;
-                r32 ru = tan(theta); // project onto plane
-                r32 xu = scale*(xd/rd)*ru;
-                r32 yu = scale*(yd/rd)*ru;
-
-                r32 gg = (r32)features[i].gg;
-                r32 gx = (r32)features[i].gx/gg;
-                r32 gy = (r32)features[i].gy/gg;
-
-                glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
-                glVertex2f(xu, yu);
-                glVertex2f(xu+scale*gx/16.0f, yu+scale*gy/16.0f);
-            }
-            glEnd();
-        }
-
-        SliderFloat("scale", &scale, 0.1f, 1.0f);
-        SliderFloat("rx", &rx, 0.2f, 2.0f);
-        SliderFloat("ry", &ry, 0.2f, 2.0f);
-        SliderFloat("fd", &fd, 0.2f, 2.0f);
-        SliderAngle("tcap", &tcap);
-        Checkbox("Draw gradients", &draw_gradients);
     });
 
-    {
-        r32 fd = 0.99304f;
-        r32 scale = 0.479f;
-        r32 rx = 1.341f;
-        r32 ry = 1.075f;
-        r32 tcap = ASCI_PI/2.2f;
-
-        for (s32 i = 0; i < feature_count; i++)
-        {
-            r32 xd = rx*(-1.0f + 2.0f * features[i].x/in_width);
-            r32 yd = ry*(-1.0f + 2.0f * features[i].y/in_height);
-            r32 rd = sqrt(xd*xd+yd*yd);
-            r32 theta = rd/fd;
-            if (theta > tcap) continue;
-            r32 ru = tan(theta);
-            r32 xu = (0.5f+0.5f*scale*(xd/rd)*ru)*in_width;
-            r32 yu = (0.5f+0.5f*scale*(yd/rd)*ru)*in_height;
-            features[i].x = asci_round_positive(xu);
-            features[i].y = asci_round_positive(yu);
-        }
-    }
-
-    // @ Gradient fisheye distortion
+    *out_count = count;
 }
 
 struct asci_Vote
@@ -585,7 +557,7 @@ void asci_hough(
     r32 r_min = -r_max;
 
     s32 count = 0;
-    r32 rejection_threshold = 0.5f;
+    r32 rejection_threshold = 0.25f; // @ Gradient fisheye correction
     for (s32 sample = 0; sample < sample_count; sample++)
     {
         // Draw two random features (edges) from the image
@@ -763,7 +735,16 @@ void asc_find_lines(
         return;
     }
 
-    asci_fisheye_undistort(features, feature_count, in_width, in_height);
+    if (options.correct_fisheye)
+    {
+        // Here I'm modifying the features array in place
+        asci_fisheye_undistort(features, feature_count,
+                               in_width, in_height,
+                               features, &feature_count,
+                               options.fisheye_radius,
+                               options.fisheye_fov,
+                               options.pinhole_fov_x);
+    }
 
     // @ Warn about parameters
     if (options.hough_sample_count > ASCI_MAX_VOTE_COUNT)
@@ -1184,10 +1165,10 @@ void asc_find_lines(
                 for (s32 ri = 0; ri < bins_r; ri++)
                 for (s32 ti = 0; ti < bins_t; ti++)
                 {
-                    r32 r = r_min + (r_max-r_min)*ri/bins_r;
-                    r32 t = t_min + (t_max-t_min)*ti/bins_t;
-                    // r32 r = histogram[ti + ri*bins_t].avg_r;
-                    // r32 t = histogram[ti + ri*bins_t].avg_t;
+                    // r32 r = r_min + (r_max-r_min)*ri/bins_r;
+                    // r32 t = t_min + (t_max-t_min)*ti/bins_t;
+                    r32 r = histogram[ti + ri*bins_t].avg_r;
+                    r32 t = histogram[ti + ri*bins_t].avg_t;
                     s32 count = histogram[ti + ri*bins_t].count;
 
                     if (mouse_ti == ti && mouse_ri == ri)
@@ -1253,13 +1234,30 @@ void asc_find_lines(
         #endif
         GDB("line estimate",
         {
-            if (!texture)
-                texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
-            BlendMode(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            Clear(0.0f, 0.0f, 0.0f, 1.0f);
-            Ortho(-1.0f, +1.0f, -1.0f, +1.0f);
-            DrawTexture(texture, 0.5f, 0.5f, 0.5f);
+            // if (!texture)
+            //     texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
+            // BlendMode(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            // Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            // Ortho(-1.0f, +1.0f, -1.0f, +1.0f);
+            // DrawTexture(texture, 0.5f, 0.5f, 0.5f);
             Ortho(0.0f, in_width, 0.0f, in_height);
+
+            glPointSize(2.0f);
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            BlendMode();
+            glBegin(GL_POINTS);
+            {
+                for (int i = 0; i < feature_count; i += 16)
+                {
+                    r32 x = (r32)features[i].x;
+                    r32 y = (r32)features[i].y;
+
+                    glColor4f(0.75f, 0.75f, 0.75f, 1.0f);
+                    glVertex2f(x, y);
+                }
+            }
+            glEnd();
+
             glLineWidth(5.0f);
             glBegin(GL_LINES);
             if (normal_error_mean < options.normal_error_threshold &&
@@ -1272,9 +1270,9 @@ void asc_find_lines(
             glEnd();
 
             BlendMode(GL_ONE, GL_ONE);
-            glPointSize(4.0f);
+            glPointSize(8.0f);
             glBegin(GL_POINTS);
-            glColor4f(0.2f*0.3f, 0.2f*0.5f, 0.2f*0.8f, 1.0f);
+            glColor4f(0.7f*0.3f, 0.7f*0.5f, 0.7f*0.8f, 1.0f);
             for (s32 i = 0; i < neighbor_count; i++)
             {
                 asci_Vote vote = neighbor_votes[i];
@@ -1317,22 +1315,20 @@ void asc_find_lines(
         }
     }
 
-    GDB("final lines", {
-        Ortho(0.0f, in_width, in_height, 0.0f);
+    GDB("final lines",
+    {
+        Ortho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
         Clear(0.0f, 0.0f, 0.0f, 1.0f);
         BlendMode();
         glBegin(GL_POINTS);
         {
-            for (int i = 0; i < feature_count; i++)
+            for (int i = 0; i < feature_count; i += 16)
             {
-                r32 gg = (r32)features[i].gg;
-                r32 gx = (r32)features[i].gx/gg;
-                r32 gy = (r32)features[i].gy/gg;
                 r32 x = (r32)features[i].x;
                 r32 y = (r32)features[i].y;
 
-                glColor4f(0.5f+0.5f*gx, 0.5f+0.5f*gy, 0.5f, 1.0f);
+                glColor4f(0.75f, 0.75f, 0.75f, 1.0f);
                 glVertex2f(x, y);
             }
         }
@@ -1362,7 +1358,6 @@ void asc_find_lines(
 #undef r32
 #endif
 
-
 // Todo list
 
 // @ Altitude-based threshold:
@@ -1389,3 +1384,8 @@ void asc_find_lines(
 // @ SIMD Sobel
 //   Compute average? Compute sum?
 //   Skip pushing entire block if almost all less than threshold
+
+// @ Gradient fisheye correction
+//   Need to correct gradient direction vectors when performing the fisheye
+//   correction. The gradient metric for rejection works badly otherwise.
+//   For now, I've set the gradient rejection threshold down (from 0.5).
