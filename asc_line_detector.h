@@ -36,6 +36,9 @@
 //
 // Default is no optimization.
 //
+// You can avoid including <assert.h> by defining your own version
+// of ASCI_ASSERT.
+//
 // Changelog
 // ------------------------------------------------------------------------
 //   1.2 (01. mar 2016) Bugfixes and robustification.
@@ -183,16 +186,24 @@ void asc_find_lines(
 #endif
 
 #ifdef ASC_LINE_DETECTOR_IMPLEMENTATION
+
+// For debugging
 #ifndef USE_GDB
+#ifndef GDB
 #define GDB(arg1, arg2) ;
+#endif
+#ifndef GDB_SKIP
 #define GDB_SKIP(arg1, arg2) ;
 #endif
-#include <stdlib.h>
-#include <math.h>
+#endif
+
 #ifndef ASCI_ASSERT
 #include <assert.h>
 #define ASCI_ASSERT assert
 #endif
+
+#include <stdlib.h>
+#include <math.h>
 #define ASCI_PI 3.1415926f
 #define ASCI_MAX_WIDTH (1920)
 #define ASCI_MAX_HEIGHT (1080)

@@ -94,7 +94,7 @@ int main(int argc, char **argv)
 
         {
             unsigned char *out = (unsigned char*)calloc(width*height, 3);
-            for (int i = 0; i < width*height; i++)
+            for (int i = 0; i < width*height*3; i++)
             {
                 out[i] = input_rgb[i];
             }
