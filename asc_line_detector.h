@@ -41,6 +41,8 @@
 //
 // Changelog
 // ------------------------------------------------------------------------
+//   1.3 (06. mar 2016) Better error metrics for line rejection. You should
+//                      now get fewer spurious detections.
 //   1.2 (01. mar 2016) Bugfixes and robustification.
 //                      Empty or almost empty images are now handled in a
 //                      safer manner.
