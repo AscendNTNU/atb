@@ -41,7 +41,8 @@ int main(int argc, char **argv)
     options.suppression_window_r       = 300.0f;
     options.peak_exit_threshold        = 0.1f;
     options.normal_error_threshold     = 20.0f;
-    options.normal_error_std_threshold = 20.0f;
+    options.normal_error_std_threshold = 15.0f;
+    options.correct_fisheye            = false;
 
     const int max_lines = 16;
     asc_Line lines[max_lines];
