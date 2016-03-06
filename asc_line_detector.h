@@ -1386,11 +1386,6 @@ void asc_find_lines(
 //   This might be fixed by using error metrics for rejection, such as
 //   variance _and_ average normal error.
 
-// @ Wrapping
-//   How do we correctly wrap rt's? If t_min, t_max != 0 and pi...?
-//   Do we just *=-1 the r's? Do we want to set t_min and t_max to
-//   just always be 0 and pi, but let r_min and r_max dynamically size?
-
 // @ SIMD Sobel
 //   Compute average? Compute sum?
 //   Skip pushing entire block if almost all less than threshold
