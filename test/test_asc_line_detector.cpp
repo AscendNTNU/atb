@@ -62,8 +62,8 @@ int main(int argc, char **argv)
         options.sobel_threshold            = 10;
         options.hough_sample_count         = 4096;
         options.suppression_window_t       = 0.349f;
-        options.suppression_window_r       = 300.0f;
-        options.peak_exit_threshold        = 0.1f;
+        options.suppression_window_r       = 100.0f;
+        options.peak_exit_threshold        = 0.01f;
         options.normal_error_threshold     = 20.0f;
         options.normal_error_std_threshold = 20.0f;
 
