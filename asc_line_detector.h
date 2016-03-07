@@ -503,7 +503,7 @@ void asci_fisheye_undistort(
         Ortho(0.0f, in_width, 0.0f, in_height);
         Clear(0.0f, 0.0f, 0.0f, 1.0f);
         glBegin(GL_POINTS);
-        for (s32 i = 0; i < count; i += 16)
+        for (s32 i = 0; i < count; i++)
         {
             asci_Feature feature = out_features[i];
 
@@ -558,7 +558,7 @@ void asci_hough(
     r32 r_min = -r_max;
 
     s32 count = 0;
-    r32 rejection_threshold = 0.25f; // @ Gradient fisheye correction
+    r32 rejection_threshold = 0.5f; // @ Gradient fisheye correction
     for (s32 sample = 0; sample < sample_count; sample++)
     {
         // Draw two random features (edges) from the image
