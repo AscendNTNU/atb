@@ -46,6 +46,8 @@ int main(int argc, char **argv)
     options.correct_fisheye            = true;
     options.fisheye_radius             = 1470.0f/2.0f;
     options.fisheye_fov                = 3.14f;
+    options.fisheye_center_x           = width/2.0f;
+    options.fisheye_center_y           = height/2.0f;
     options.pinhole_fov_x              = 3.14f/1.25f;
 
     const int max_lines = 16;

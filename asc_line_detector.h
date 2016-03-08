@@ -164,10 +164,12 @@ struct asc_LineDetectorOptions
     float normal_error_std_threshold;
 
     bool correct_fisheye;
-    float fisheye_radius; // Distance in pixels of the fisheye lens radius
-                          // (The lens perimeter is usually visible near the edges as a black region)
-    float fisheye_fov;    // Field of view of the fisheye lens (e.g. 180 degrees)
-    float pinhole_fov_x;  // Desired horizontal field of view of the pinhole projection
+    float fisheye_radius;   // Distance in pixels of the fisheye lens radius
+                            // (The lens perimeter is usually visible near the edges as a black region)
+    float fisheye_fov;      // Field of view of the fisheye lens (e.g. 180 degrees)
+    float fisheye_center_x; // Center of distortion in x (e.g. width/2)
+    float fisheye_center_y; // Center of distortion in y (e.g. height/2)
+    float pinhole_fov_x;    // Desired horizontal field of view of the pinhole projection
 };
 
 // in_rgb
@@ -458,15 +460,62 @@ void asci_fisheye_undistort(
     s32 *out_count,
     r32 fisheye_radius,
     r32 fisheye_fov,
+    r32 fisheye_center_x,
+    r32 fisheye_center_y,
     r32 pinhole_fov_x)
 {
     r32 pinhole_f = (in_width/2.0f)/tan(pinhole_fov_x/2.0f);
+    #if 0
+    GDB("fisheye tune",
+    {
+        glLineWidth(1.0f);
+        glPointSize(2.0f);
+        BlendMode();
+        Ortho(0.0f, in_width, 0.0f, in_height);
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        glBegin(GL_POINTS);
+        s32 count = 0;
+        for (s32 i = 0; i < in_count; i++)
+        {
+            asci_Feature feature = in_features[i];
+            r32 xd = feature.x - fisheye_center_x;
+            r32 yd = feature.y - fisheye_center_y;
+            r32 rd = sqrt(xd*xd+yd*yd);
+            r32 theta = (fisheye_fov/2.0f)*rd/fisheye_radius;
+            if (theta > pinhole_fov_x/2.0f)
+                continue;
+            r32 ru = tan(theta);
+
+            r32 xu;
+            r32 yu;
+            if (rd > 1.0f)
+            {
+                xu = pinhole_f*(xd/rd)*ru;
+                yu = pinhole_f*(yd/rd)*ru;
+            }
+            else // Handle limit case in center
+            {
+                xu = pinhole_f*xd*ru;
+                yu = pinhole_f*yd*ru;
+            }
+
+            s32 ix = asci_round_positive(fisheye_center_x+xu);
+            s32 iy = asci_round_positive(fisheye_center_y+yu);
+            glVertex2f(ix, iy);
+        }
+        glEnd();
+        SliderFloat("fisheye radius", &fisheye_radius, 500.0f, 1000.0f);
+        SliderFloat("center x", &fisheye_center_x, 200.0f, 1000.0f);
+        SliderFloat("center y", &fisheye_center_y, 200.0f, 1000.0f);
+    });
+    #endif
+
     s32 count = 0;
     for (s32 i = 0; i < in_count; i++)
     {
         asci_Feature feature = in_features[i];
-        r32 xd = feature.x - in_width/2.0f;
-        r32 yd = feature.y - in_height/2.0f;
+        r32 xd = feature.x - fisheye_center_x;
+        r32 yd = feature.y - fisheye_center_y;
         r32 rd = sqrt(xd*xd+yd*yd);
         r32 theta = (fisheye_fov/2.0f)*rd/fisheye_radius;
         if (theta > pinhole_fov_x/2.0f)
@@ -486,8 +535,8 @@ void asci_fisheye_undistort(
             yu = pinhole_f*yd*ru;
         }
 
-        s32 ix = asci_round_positive(in_width/2.0f+xu);
-        s32 iy = asci_round_positive(in_height/2.0f+yu);
+        s32 ix = asci_round_positive(fisheye_center_x+xu);
+        s32 iy = asci_round_positive(fisheye_center_y+yu);
 
         // @ Gradient fisheye distortion
         feature.x = ix;
@@ -707,7 +756,7 @@ void asc_find_lines(
         features,
         &feature_count);
 
-    GDB("sobel features",
+    GDB_SKIP("sobel features",
     {
         Ortho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
@@ -744,6 +793,8 @@ void asc_find_lines(
                                features, &feature_count,
                                options.fisheye_radius,
                                options.fisheye_fov,
+                               options.fisheye_center_x,
+                               options.fisheye_center_y,
                                options.pinhole_fov_x);
     }
 
@@ -1324,7 +1375,7 @@ void asc_find_lines(
         BlendMode();
         glBegin(GL_POINTS);
         {
-            for (int i = 0; i < feature_count; i += 16)
+            for (int i = 0; i < feature_count; i++)
             {
                 r32 x = (r32)features[i].x;
                 r32 y = (r32)features[i].y;
