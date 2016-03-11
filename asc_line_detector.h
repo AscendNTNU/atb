@@ -473,9 +473,9 @@ void asci_fisheye_undistort(
         BlendMode();
         Ortho(0.0f, in_width, 0.0f, in_height);
         Clear(0.0f, 0.0f, 0.0f, 1.0f);
-        glBegin(GL_POINTS);
+        glBegin(GL_LINES);
         s32 count = 0;
-        for (s32 i = 0; i < in_count; i++)
+        for (s32 i = 0; i < in_count; i += 16)
         {
             asci_Feature feature = in_features[i];
             r32 xd = feature.x - fisheye_center_x;
@@ -484,24 +484,55 @@ void asci_fisheye_undistort(
             r32 theta = (fisheye_fov/2.0f)*rd/fisheye_radius;
             if (theta > pinhole_fov_x/2.0f)
                 continue;
-            r32 ru = tan(theta);
+            r32 ru = pinhole_f*tan(theta); // Obs! Different definition of ru
 
             r32 xu;
             r32 yu;
             if (rd > 1.0f)
             {
-                xu = pinhole_f*(xd/rd)*ru;
-                yu = pinhole_f*(yd/rd)*ru;
+                xu = (xd/rd)*ru;
+                yu = (yd/rd)*ru;
             }
             else // Handle limit case in center
             {
-                xu = pinhole_f*xd*ru;
-                yu = pinhole_f*yd*ru;
+                xu = xd*ru;
+                yu = yd*ru;
+            }
+
+            r32 gxu;
+            r32 gyu;
+            {
+                r32 ff = fisheye_radius/(fisheye_fov/2.0f);
+                r32 fp = pinhole_f;
+                r32 gxd = (r32)feature.gx;
+                r32 gyd = (r32)feature.gy;
+                r32 DIDphid = -gxd*yd + gyd*xd;
+                r32 DIDrd = (gxd*xd+gyd*yd)/rd;
+
+                r32 DrdDru = (ff/fp)/((ru/fp)*(ru/fp)+1.0f);
+                r32 DIDphiu = DIDphid;
+                r32 DIDru = DIDrd*DrdDru;
+
+                r32 DruDxu = xu/ru;
+                r32 DruDyu = yu/ru;
+
+                r32 DphiuDxu = 0.0f;
+                r32 DphiuDyu = 0.0f;
+                if (abs(yu) > 1.0f)
+                    DphiuDxu = ((xu*xu)/(ru*ru)-1.0f)/yu;
+                if (abs(xu) > 1.0f)
+                    DphiuDyu = (1.0f-(yu*yu)/(ru*ru))/xu;
+
+                gxu = DIDru*DruDxu + DIDphiu*DphiuDxu;
+                gyu = DIDru*DruDyu + DIDphiu*DphiuDyu;
             }
 
             s32 ix = asci_round_positive(fisheye_center_x+xu);
             s32 iy = asci_round_positive(fisheye_center_y+yu);
+
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
             glVertex2f(ix, iy);
+            glVertex2f(ix+gxu/4.0f, iy+gyu/4.0f);
         }
         glEnd();
         SliderFloat("fisheye radius", &fisheye_radius, 500.0f, 1000.0f);
@@ -520,31 +551,65 @@ void asci_fisheye_undistort(
         r32 theta = (fisheye_fov/2.0f)*rd/fisheye_radius;
         if (theta > pinhole_fov_x/2.0f)
             continue;
-        r32 ru = tan(theta);
+        r32 ru = pinhole_f*tan(theta);
 
         r32 xu;
         r32 yu;
         if (rd > 1.0f)
         {
-            xu = pinhole_f*(xd/rd)*ru;
-            yu = pinhole_f*(yd/rd)*ru;
+            xu = (xd/rd)*ru;
+            yu = (yd/rd)*ru;
         }
         else // Handle limit case in center
         {
-            xu = pinhole_f*xd*ru;
-            yu = pinhole_f*yd*ru;
+            xu = xd*ru;
+            yu = yd*ru;
+        }
+
+        r32 gxu;
+        r32 gyu;
+        {
+            r32 ff = fisheye_radius/(fisheye_fov/2.0f);
+            r32 fp = pinhole_f;
+            r32 gxd = (r32)feature.gx;
+            r32 gyd = (r32)feature.gy;
+            r32 DIDphid = -gxd*yd + gyd*xd;
+            r32 DIDrd = (gxd*xd+gyd*yd)/rd;
+
+            r32 DrdDru = (ff/fp)/((ru/fp)*(ru/fp)+1.0f);
+            r32 DIDphiu = DIDphid;
+            r32 DIDru = DIDrd*DrdDru;
+
+            r32 DruDxu = xu/ru;
+            r32 DruDyu = yu/ru;
+
+            r32 DphiuDxu = 0.0f;
+            r32 DphiuDyu = 0.0f;
+            if (abs(yu) > 1.0f)
+                DphiuDxu = ((xu*xu)/(ru*ru)-1.0f)/yu;
+            if (abs(xu) > 1.0f)
+                DphiuDyu = (1.0f-(yu*yu)/(ru*ru))/xu;
+
+            gxu = DIDru*DruDxu + DIDphiu*DphiuDxu;
+            gyu = DIDru*DruDyu + DIDphiu*DphiuDyu;
+
+            // Renormalize
+            r32 ggu = sqrt(gxu*gxu+gyu*gyu);
+            gxu *= feature.gg/ggu;
+            gyu *= feature.gg/ggu;
         }
 
         s32 ix = asci_round_positive(fisheye_center_x+xu);
         s32 iy = asci_round_positive(fisheye_center_y+yu);
 
-        // @ Gradient fisheye distortion
         feature.x = ix;
         feature.y = iy;
+        feature.gx = (s16)gxu;
+        feature.gy = (s16)gyu;
         out_features[count++] = feature;
     }
 
-    GDB("fisheye",
+    GDB_SKIP("fisheye",
     {
         glLineWidth(1.0f);
         glPointSize(2.0f);
@@ -607,7 +672,7 @@ void asci_hough(
     r32 r_min = -r_max;
 
     s32 count = 0;
-    r32 rejection_threshold = 0.5f; // @ Gradient fisheye correction
+    r32 rejection_threshold = 0.75f; // @ Gradient rejection threshold
     for (s32 sample = 0; sample < sample_count; sample++)
     {
         // Draw two random features (edges) from the image
@@ -1190,6 +1255,9 @@ void asc_find_lines(
             normal_error_std = sqrt((var_sum/N) - normal_error_mean*normal_error_mean);
         }
 
+        if (neighbor_count < 5) // @ Low count
+            continue;
+
         // Reject line based on the error metric computed above
         if (normal_error_mean < options.normal_error_threshold &&
             normal_error_std < options.normal_error_std_threshold) // @ Altitude-based threshold
@@ -1203,7 +1271,7 @@ void asc_find_lines(
             lines_found++;
         }
 
-        GDB("hough histogram",
+        GDB_SKIP("hough histogram",
         {
             s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
             s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
@@ -1284,7 +1352,7 @@ void asc_find_lines(
         #ifdef USE_GDB
         GLuint texture = 0;
         #endif
-        GDB("line estimate",
+        GDB_SKIP("line estimate",
         {
             // if (!texture)
             //     texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
@@ -1299,12 +1367,12 @@ void asc_find_lines(
             BlendMode();
             glBegin(GL_POINTS);
             {
-                for (int i = 0; i < feature_count; i += 16)
+                for (int i = 0; i < feature_count; i++)
                 {
                     r32 x = (r32)features[i].x;
                     r32 y = (r32)features[i].y;
 
-                    glColor4f(0.75f, 0.75f, 0.75f, 1.0f);
+                    glColor4f(0.3f, 0.3f, 0.3f, 1.0f);
                     glVertex2f(x, y);
                 }
             }
@@ -1316,7 +1384,7 @@ void asc_find_lines(
                 normal_error_std < options.normal_error_std_threshold)
                 glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
             else
-                glColor4f(0.2f, 0.2f, 0.2f, 1.0f);
+                glColor4f(0.2f, 0.5f, 1.0f, 1.0f);
             glVertex2f(x0, y0);
             glVertex2f(x1, y1);
             glEnd();
@@ -1437,7 +1505,8 @@ void asc_find_lines(
 //   Compute average? Compute sum?
 //   Skip pushing entire block if almost all less than threshold
 
-// @ Gradient fisheye correction
-//   Need to correct gradient direction vectors when performing the fisheye
-//   correction. The gradient metric for rejection works badly otherwise.
-//   For now, I've set the gradient rejection threshold down (from 0.5).
+// @ Gradient rejection threshold
+//   Too high?
+
+// @ Low count
+//   Do we also want to reject lines with low neighborhood count
