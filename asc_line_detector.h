@@ -226,6 +226,34 @@ void asc_find_lines(
 #define u08 uint8_t
 #define r32 float
 
+s32 asci_round_positive(r32 x)
+{
+    return (s32)(x + 0.5f);
+}
+
+s32 asci_clamp_s32(s32 x, s32 low, s32 high)
+{
+    if (x < low) return low;
+    if (x > high) return high;
+    return x;
+}
+
+r32 asci_max(r32 x, r32 y)
+{
+    if (x > y) return x;
+    else return y;
+}
+
+s16 asci_abs_s16(s16 x)
+{
+    return abs(x);
+}
+
+r32 asci_abs_r32(r32 x)
+{
+    return fabs(x);
+}
+
 struct asci_Feature
 {
     s32 x;
@@ -400,7 +428,7 @@ void asci_sobel(
 
             s16 gx = i02-i00+i12+i12-i10-i10+i22-i20;
             s16 gy = i20-i00+i21+i21-i01-i01+i22-i02;
-            s16 gg = abs(gx) + abs(gy);
+            s16 gg = asci_abs_s16(gx) + asci_abs_s16(gy);
             if (gg > threshold)
             {
                 asci_Feature feature = {0};
@@ -431,24 +459,6 @@ u32 asci_xor128()
     z = w;
     w = w ^ (w >> 19) ^ t ^ (t >> 8);
     return w;
-}
-
-s32 asci_round_positive(r32 x)
-{
-    return (s32)(x + 0.5f);
-}
-
-s32 asci_clamp_s32(s32 x, s32 low, s32 high)
-{
-    if (x < low) return low;
-    if (x > high) return high;
-    return x;
-}
-
-r32 asci_max(r32 x, r32 y)
-{
-    if (x > y) return x;
-    else return y;
 }
 
 void asci_fisheye_undistort(
@@ -518,9 +528,9 @@ void asci_fisheye_undistort(
 
                 r32 DphiuDxu = 0.0f;
                 r32 DphiuDyu = 0.0f;
-                if (abs(yu) > 1.0f)
+                if (asci_abs_r32(yu) > 1.0f)
                     DphiuDxu = ((xu*xu)/(ru*ru)-1.0f)/yu;
-                if (abs(xu) > 1.0f)
+                if (asci_abs_r32(xu) > 1.0f)
                     DphiuDyu = (1.0f-(yu*yu)/(ru*ru))/xu;
 
                 gxu = DIDru*DruDxu + DIDphiu*DphiuDxu;
@@ -585,9 +595,9 @@ void asci_fisheye_undistort(
 
             r32 DphiuDxu = 0.0f;
             r32 DphiuDyu = 0.0f;
-            if (abs(yu) > 1.0f)
+            if (asci_abs_r32(yu) > 1.0f)
                 DphiuDxu = ((xu*xu)/(ru*ru)-1.0f)/yu;
-            if (abs(xu) > 1.0f)
+            if (asci_abs_r32(xu) > 1.0f)
                 DphiuDyu = (1.0f-(yu*yu)/(ru*ru))/xu;
 
             gxu = DIDru*DruDxu + DIDphiu*DphiuDxu;
@@ -684,7 +694,7 @@ void asci_hough(
         // Reject the samples if the gradients differ too much
         {
             r32 dot = f1.gx*f2.gx + f1.gy*f2.gy;
-            if (abs(dot) <= rejection_threshold*f1.gg*f2.gg)
+            if (asci_abs_r32(dot) <= rejection_threshold*f1.gg*f2.gg)
             {
                 continue;
             }
@@ -712,7 +722,7 @@ void asci_hough(
         {
             r32 dot1 = (f1.gx*c+f1.gy*s) / f1.gg;
             r32 dot2 = (f2.gx*c+f2.gy*s) / f2.gg;
-            r32 adot = 0.5f*(abs(dot1) + abs(dot2));
+            r32 adot = 0.5f*(asci_abs_r32(dot1) + asci_abs_r32(dot2));
             if (adot <= rejection_threshold)
             {
                 continue;
@@ -891,7 +901,7 @@ void asc_find_lines(
     // window, since I iterate over the window later. If the range is zero,
     // it means that we either found nothing, or that we only found one type
     // of line.
-    if (abs(r_max-r_min) < options.suppression_window_r*2.5f)
+    if (asci_abs_r32(r_max-r_min) < options.suppression_window_r*2.5f)
     {
         r_max = (options.suppression_window_r/2.0f)*1.25f;
         r_min = -r_max;
@@ -1042,7 +1052,7 @@ void asc_find_lines(
                 {
                     r32 d1 = peak_normal_x*vote.x1 + peak_normal_y*vote.y1 - peak_r;
                     r32 d2 = peak_normal_x*vote.x2 + peak_normal_y*vote.y2 - peak_r;
-                    if (asci_max(abs(d1),abs(d2)) < 100.0f) // @ Better neighborhood collection.
+                    if (asci_max(asci_abs_r32(d1),asci_abs_r32(d2)) < 100.0f) // @ Better neighborhood collection.
                     {
                         neighbor_votes[neighbor_count] = vote;
                         neighbor_count++;
@@ -1074,7 +1084,7 @@ void asc_find_lines(
             r32 tangent_x = normal_y;
             r32 tangent_y = -normal_x;
             {
-                if (abs(normal_y) > abs(normal_x))
+                if (asci_abs_r32(normal_y) > asci_abs_r32(normal_x))
                 {
                     x0 = 0.0f;
                     x1 = in_width;
@@ -1159,7 +1169,7 @@ void asc_find_lines(
             s32 N = 2*neighbor_count;
             r32 L = 1.0f/in_width;
 
-            if (abs(peak_normal_x) > abs(peak_normal_y))
+            if (asci_abs_r32(peak_normal_x) > asci_abs_r32(peak_normal_y))
             {
                 // "Vertical" line
                 for (s32 i = 0; i < neighbor_count; i++)
@@ -1217,7 +1227,7 @@ void asc_find_lines(
         // Compute terminal points for drawing the line
         r32 x0, y0, x1, y1;
         {
-            if (abs(normal_y) > abs(normal_x))
+            if (asci_abs_r32(normal_y) > asci_abs_r32(normal_x))
             {
                 x0 = 0.0f;
                 x1 = in_width;
@@ -1245,8 +1255,8 @@ void asc_find_lines(
                 asci_Vote vote = neighbor_votes[i];
                 r32 d1 = normal_x*vote.x1 + normal_y*vote.y1 - line_r;
                 r32 d2 = normal_x*vote.x2 + normal_y*vote.y2 - line_r;
-                r32 e1 = abs(d1);
-                r32 e2 = abs(d2);
+                r32 e1 = asci_abs_r32(d1);
+                r32 e2 = asci_abs_r32(d2);
                 mean_sum += e1 + e2;
                 var_sum += e1*e1 + e2*e2; // @ Numerical stability
             }
