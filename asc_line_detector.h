@@ -609,7 +609,7 @@ void asci_fisheye_undistort(
         out_features[count++] = feature;
     }
 
-    GDB_SKIP("fisheye",
+    GDB("fisheye",
     {
         glLineWidth(1.0f);
         glPointSize(2.0f);
