@@ -874,25 +874,32 @@ void asc_find_lines(
     }
 
     // @ Experimental Hough transform
-    #if 0
+    #if 1
     {
         const int bins_t = 32;
         const int bins_r = 32;
         const r32 r_max = sqrt((r32)(in_width*in_width+in_height*in_height));
         const r32 r_min = -r_max;
         asci_HoughCell histogram[bins_t*bins_r];
+        asci_HoughCell histogram_maxima[bins_t*bins_r];
         s32 dilated_counts[bins_t*bins_r];
         for (int i = 0; i < bins_t*bins_r; i++)
         {
             histogram[i].count = 0;
             histogram[i].avg_t = 0.0f;
             histogram[i].avg_r = 0.0f;
+
+            histogram_maxima[i].count = 0;
+            histogram_maxima[i].avg_t = 0.0f;
+            histogram_maxima[i].avg_r = 0.0f;
             dilated_counts[i] = 0;
         }
 
         s32 max_count = 0;
+        s32 processed_count = 0;
         for (int i = 0; i < feature_count; i++)
         {
+            processed_count++;
             asci_Feature f = features[i];
             r32 x = f.x;
             r32 y = f.y;
@@ -914,17 +921,23 @@ void asc_find_lines(
                 if (new_count > max_count)
                     max_count = new_count;
             }
+            i += (asci_xor128() % 4);
         }
         for (int i = 0; i < bins_t*bins_r; i++)
         {
-            histogram[i].avg_t /= (r32)histogram[i].count;
-            histogram[i].avg_r /= (r32)histogram[i].count;
+            if (histogram[i].count > 0)
+            {
+                histogram[i].avg_t /= (r32)histogram[i].count;
+                histogram[i].avg_r /= (r32)histogram[i].count;
+            }
         }
 
         GDB("eht",
         {
             s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
             s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
+            r32 mouse_t = 0.0f;
+            r32 mouse_r = 0.0f;
 
             Clear(0.0f, 0.0f, 0.0f, 1.0f);
 
@@ -957,11 +970,17 @@ void asc_find_lines(
                 r32 r = r_min + (r_max-r_min) * ri / bins_r;
                 r32 t = 0.0f + ASCI_PI * ti / bins_t;
                 s32 c = histogram[ti+ri*bins_t].count;
-                if (c < 1.0f)
+                if (c < 10)
                     continue;
                 ColorRamp((r32)c/max_count);
-                glVertex2f(histogram[ti+ri*bins_t].avg_t,
-                           histogram[ti+ri*bins_t].avg_r);
+                if (ti == mouse_ti && ri == mouse_ri)
+                {
+                    mouse_t = histogram[ti+ri*bins_t].avg_t;
+                    mouse_r = histogram[ti+ri*bins_t].avg_r;
+                    glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+                    SetTooltip("%d", c);
+                }
+                glVertex2f(t, r);
             }
             glEnd();
 
@@ -985,19 +1004,48 @@ void asc_find_lines(
                     dilated_counts[ti+ri*bins_t] = c;
                 }
 
+                for (int ri = 1; ri < bins_r-1; ri++)
+                for (int ti = 1; ti < bins_t-1; ti++)
+                {
+                    s32 c_original = histogram[ti+ri*bins_t].count;
+                    if (c_original < 1)
+                        continue;
+                    s32 c_dilated = dilated_counts[ti+ri*bins_t];
+                    if (c_original == c_dilated)
+                    {
+                        asci_HoughCell c00 = histogram[(ti-1)+(ri-1)*bins_t];
+                        asci_HoughCell c10 = histogram[(ti+0)+(ri-1)*bins_t];
+                        asci_HoughCell c20 = histogram[(ti+1)+(ri-1)*bins_t];
+                        asci_HoughCell c01 = histogram[(ti-1)+(ri+0)*bins_t];
+                        asci_HoughCell c11 = histogram[(ti+0)+(ri+0)*bins_t];
+                        asci_HoughCell c21 = histogram[(ti+1)+(ri+0)*bins_t];
+                        asci_HoughCell c02 = histogram[(ti-1)+(ri+1)*bins_t];
+                        asci_HoughCell c12 = histogram[(ti+0)+(ri+1)*bins_t];
+                        asci_HoughCell c22 = histogram[(ti+1)+(ri+1)*bins_t];
+
+                        s32 n = c00.count+c10.count+c20.count+
+                                c01.count+c11.count+c21.count+
+                                c02.count+c12.count+c22.count;
+                        r32 m00 = c00.count/(r32)n; r32 t00 = c00.avg_t; r32 r00 = c00.avg_r;
+                        r32 m10 = c10.count/(r32)n; r32 t10 = c10.avg_t; r32 r10 = c10.avg_r;
+                        r32 m20 = c20.count/(r32)n; r32 t20 = c20.avg_t; r32 r20 = c20.avg_r;
+                        r32 m01 = c01.count/(r32)n; r32 t01 = c01.avg_t; r32 r01 = c01.avg_r;
+                        r32 m11 = c11.count/(r32)n; r32 t11 = c11.avg_t; r32 r11 = c11.avg_r;
+                        r32 m21 = c21.count/(r32)n; r32 t21 = c21.avg_t; r32 r21 = c21.avg_r;
+                        r32 m02 = c02.count/(r32)n; r32 t02 = c02.avg_t; r32 r02 = c02.avg_r;
+                        r32 m12 = c12.count/(r32)n; r32 t12 = c12.avg_t; r32 r12 = c12.avg_r;
+                        r32 m22 = c22.count/(r32)n; r32 t22 = c22.avg_t; r32 r22 = c22.avg_r;
+                        histogram_maxima[ti+ri*bins_t].avg_t = t00*m00+t10*m10+t20*m20+t01*m01+t11*m11+t21*m21+t02*m02+t12*m12+t22*m22;
+                        histogram_maxima[ti+ri*bins_t].avg_r = r00*m00+r10*m10+r20*m20+r01*m01+r11*m11+r21*m21+r02*m02+r12*m12+r22*m22;
+                        histogram_maxima[ti+ri*bins_t].count = n;
+                    }
+                }
                 for (int i = 0; i < bins_t*bins_r; i++)
                 {
-                    s32 c_original = histogram[i].count;
-                    if (c_original <= 1.0f)
-                        continue;
-                    s32 c_dilated = dilated_counts[i];
-                    if (c_original < c_dilated)
-                        histogram[i].count = 0;
+                    histogram[i] = histogram_maxima[i];
                 }
             }
 
-            r32 mouse_t = ASCI_PI * ((0.5f+0.5f*input.mouse.x)*bins_t) / bins_t;
-            r32 mouse_r = r_min + (r_max-r_min) * ((0.5f-0.5f*input.mouse.y)*bins_r) / bins_r;
             r32 normal_x = cos(mouse_t);
             r32 normal_y = sin(mouse_t);
             r32 tangent_x = normal_y;
@@ -1032,6 +1080,8 @@ void asc_find_lines(
             glVertex2f(x0, y0);
             glVertex2f(x1, y1);
             glEnd();
+
+            Text("Processed count: %d", processed_count);
         });
     }
     #endif
