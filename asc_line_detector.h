@@ -672,7 +672,7 @@ void asci_hough(
     r32 r_min = -r_max;
 
     s32 count = 0;
-    r32 rejection_threshold = 0.75f; // @ Gradient rejection threshold
+    r32 rejection_threshold = 0.2f; // @ Gradient rejection threshold
     for (s32 sample = 0; sample < sample_count; sample++)
     {
         // Draw two random features (edges) from the image
@@ -863,6 +863,145 @@ void asc_find_lines(
                                options.pinhole_fov_x);
     }
 
+    // @ Experimental Hough transform
+    #if 0
+    {
+        const int bins_t = 32;
+        const int bins_r = 32;
+        const r32 r_max = sqrt((r32)(in_width*in_width+in_height*in_height));
+        const r32 r_min = -r_max;
+        r32 counts[bins_t*bins_r];
+        r32 dilated_counts[bins_t*bins_r];
+        for (int i = 0; i < bins_t*bins_r; i++)
+        {
+            counts[i] = 0.0f;
+            dilated_counts[i] = 0.0f;
+        }
+
+        r32 max_count = 0;
+        for (int i = 0; i < feature_count; i++)
+        {
+            asci_Feature f = features[i];
+            r32 x = f.x;
+            r32 y = f.y;
+            r32 t_0 = atan2(f.gy, f.gx);
+            if (t_0 < 0.0f) t_0 += ASCI_PI;
+            int ti_0 = bins_t * t_0 / ASCI_PI;
+            for (int ti  = asci_clamp_s32(ti_0-32, 0, bins_t-1);
+                     ti <= asci_clamp_s32(ti_0+32, 0, bins_t-1);
+                     ti++)
+            {
+                r32 t = ASCI_PI * ti / (r32)bins_t;
+                r32 r = x*cos(t)+y*sin(t);
+                int ri = (int)(bins_r * (r - r_min) / (r_max - r_min));
+                ri = asci_clamp_s32(ri, 0, bins_r-1);
+                r32 w = exp(-(t-t_0)*(t-t_0)/(0.05f*0.05f));
+                counts[ti+bins_t*ri] += w;
+                r32 new_count = counts[ti+bins_t*ri];
+                if (new_count > max_count)
+                    max_count = new_count;
+            }
+        }
+
+        GDB("eht",
+        {
+            s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
+            s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
+
+            Ortho(0.0f, ASCI_PI, r_min, r_max);
+            Clear(0.0f, 0.0f, 0.0f, 1.0f);
+            BlendMode();
+            glPointSize(8.0f);
+            glBegin(GL_POINTS);
+            for (int ri = 1; ri < bins_r-1; ri++)
+            for (int ti = 1; ti < bins_t-1; ti++)
+            {
+                r32 r = r_min + (r_max-r_min) * ri / bins_r;
+                r32 t = 0.0f + ASCI_PI * ti / bins_t;
+                r32 c = counts[ti+ri*bins_t];
+                if (c < 1.0f)
+                    continue;
+                ColorRamp((r32)c/max_count);
+                if (mouse_ti == ti && mouse_ri == ri)
+                {
+                    glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+                    SetTooltip("%.2f", c);
+                }
+                glVertex2f(t, r);
+            }
+            glEnd();
+
+            if (Button("Detect local maxima"))
+            {
+                for (int ri = 1; ri < bins_r-1; ri++)
+                for (int ti = 1; ti < bins_t-1; ti++)
+                {
+                    r32 c00 = counts[(ti-1)+(ri-1)*bins_t];
+                    r32 c = c00;
+                    r32 c10 = counts[(ti+0)+(ri-1)*bins_t]; if (c10 > c) c = c10;
+                    r32 c20 = counts[(ti+1)+(ri-1)*bins_t]; if (c20 > c) c = c20;
+
+                    r32 c01 = counts[(ti-1)+(ri+0)*bins_t]; if (c01 > c) c = c01;
+                    r32 c11 = counts[(ti+0)+(ri+0)*bins_t]; if (c11 > c) c = c11;
+                    r32 c21 = counts[(ti+1)+(ri+0)*bins_t]; if (c21 > c) c = c21;
+
+                    r32 c02 = counts[(ti-1)+(ri+1)*bins_t]; if (c02 > c) c = c02;
+                    r32 c12 = counts[(ti+0)+(ri+1)*bins_t]; if (c12 > c) c = c12;
+                    r32 c22 = counts[(ti+1)+(ri+1)*bins_t]; if (c22 > c) c = c22;
+                    dilated_counts[ti+ri*bins_t] = c;
+                }
+
+                for (int i = 0; i < bins_t*bins_r; i++)
+                {
+                    r32 c_original = counts[i];
+                    if (c_original <= 1.0f)
+                        continue;
+                    r32 c_dilated = dilated_counts[i];
+                    if (c_original < c_dilated)
+                        counts[i] = 0.0f;
+                }
+            }
+
+            r32 mouse_t = ASCI_PI * ((0.5f+0.5f*input.mouse.x)*bins_t) / bins_t;
+            r32 mouse_r = r_min + (r_max-r_min) * ((0.5f-0.5f*input.mouse.y)*bins_r) / bins_r;
+            r32 normal_x = cos(mouse_t);
+            r32 normal_y = sin(mouse_t);
+            r32 tangent_x = normal_y;
+            r32 tangent_y = -normal_x;
+
+            // Compute terminal points for drawing the line
+            r32 x0;
+            r32 y0;
+            r32 x1;
+            r32 y1;
+            {
+                if (abs(normal_y) > abs(normal_x))
+                {
+                    x0 = 0.0f;
+                    x1 = in_width;
+                    y0 = (mouse_r-x0*normal_x)/normal_y;
+                    y1 = (mouse_r-x1*normal_x)/normal_y;
+                }
+                else
+                {
+                    y0 = 0.0f;
+                    y1 = in_height;
+                    x0 = (mouse_r-y0*normal_y)/normal_x;
+                    x1 = (mouse_r-y1*normal_y)/normal_x;
+                }
+            }
+
+            Ortho(0.0f, in_width, 0.0f, in_height);
+            glLineWidth(4.0f);
+            glBegin(GL_LINES);
+            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            glVertex2f(x0, y0);
+            glVertex2f(x1, y1);
+            glEnd();
+        });
+    }
+    #endif
+
     // @ Warn about parameters
     if (options.hough_sample_count > ASCI_MAX_VOTE_COUNT)
         options.hough_sample_count = ASCI_MAX_VOTE_COUNT;
@@ -913,6 +1052,104 @@ void asc_find_lines(
         votes,
         vote_count,
         &histogram_max_count);
+
+    static s32 dilated_counts[bins_t*bins_r];
+    GDB("eht2",
+    {
+        s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
+        s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
+
+        Ortho(0.0f, ASCI_PI, r_min, r_max);
+        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        BlendMode();
+        glPointSize(8.0f);
+        glBegin(GL_POINTS);
+        for (int ri = 1; ri < bins_r-1; ri++)
+        for (int ti = 1; ti < bins_t-1; ti++)
+        {
+            r32 r = r_min + (r_max-r_min) * ri / bins_r;
+            r32 t = 0.0f + ASCI_PI * ti / bins_t;
+            s32 c = histogram[ti+ri*bins_t].count;
+            if (c < 1)
+                continue;
+            ColorRamp(c / (0.2f*histogram_max_count));
+            if (mouse_ti == ti && mouse_ri == ri)
+            {
+                glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+                SetTooltip("%d", c);
+            }
+            glVertex2f(t, r);
+        }
+        glEnd();
+
+        if (Button("Detect local maxima"))
+        {
+            for (int ri = 1; ri < bins_r-1; ri++)
+            for (int ti = 1; ti < bins_t-1; ti++)
+            {
+                s32 c00 = histogram[(ti-1)+(ri-1)*bins_t].count;
+                s32 c = c00;
+                s32 c10 = histogram[(ti+0)+(ri-1)*bins_t].count; if (c10 > c) c = c10;
+                s32 c20 = histogram[(ti+1)+(ri-1)*bins_t].count; if (c20 > c) c = c20;
+
+                s32 c01 = histogram[(ti-1)+(ri+0)*bins_t].count; if (c01 > c) c = c01;
+                s32 c11 = histogram[(ti+0)+(ri+0)*bins_t].count; if (c11 > c) c = c11;
+                s32 c21 = histogram[(ti+1)+(ri+0)*bins_t].count; if (c21 > c) c = c21;
+
+                s32 c02 = histogram[(ti-1)+(ri+1)*bins_t].count; if (c02 > c) c = c02;
+                s32 c12 = histogram[(ti+0)+(ri+1)*bins_t].count; if (c12 > c) c = c12;
+                s32 c22 = histogram[(ti+1)+(ri+1)*bins_t].count; if (c22 > c) c = c22;
+                dilated_counts[ti+ri*bins_t] = c;
+            }
+
+            for (int i = 0; i < bins_t*bins_r; i++)
+            {
+                s32 c_original = histogram[i].count;
+                if (c_original < 1)
+                    continue;
+                s32 c_dilated = dilated_counts[i];
+                if (c_original < c_dilated)
+                    histogram[i].count = 0;
+            }
+        }
+
+        r32 mouse_t = ASCI_PI * ((0.5f+0.5f*input.mouse.x)*bins_t) / bins_t;
+        r32 mouse_r = r_min + (r_max-r_min) * ((0.5f-0.5f*input.mouse.y)*bins_r) / bins_r;
+        r32 normal_x = cos(mouse_t);
+        r32 normal_y = sin(mouse_t);
+        r32 tangent_x = normal_y;
+        r32 tangent_y = -normal_x;
+
+        // Compute terminal points for drawing the line
+        r32 x0;
+        r32 y0;
+        r32 x1;
+        r32 y1;
+        {
+            if (abs(normal_y) > abs(normal_x))
+            {
+                x0 = 0.0f;
+                x1 = in_width;
+                y0 = (mouse_r-x0*normal_x)/normal_y;
+                y1 = (mouse_r-x1*normal_x)/normal_y;
+            }
+            else
+            {
+                y0 = 0.0f;
+                y1 = in_height;
+                x0 = (mouse_r-y0*normal_y)/normal_x;
+                x1 = (mouse_r-y1*normal_y)/normal_x;
+            }
+        }
+
+        Ortho(0.0f, in_width, 0.0f, in_height);
+        glLineWidth(4.0f);
+        glBegin(GL_LINES);
+        glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+        glVertex2f(x0, y0);
+        glVertex2f(x1, y1);
+        glEnd();
+    });
 
     // Compute the suppression window dimensions in number of histogram cells
     s32 window_len_t = 0;
@@ -1271,7 +1508,7 @@ void asc_find_lines(
             lines_found++;
         }
 
-        GDB_SKIP("hough histogram",
+        GDB("hough histogram",
         {
             s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
             s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
