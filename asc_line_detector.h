@@ -897,6 +897,8 @@ void asc_find_lines(
 
         s32 max_count = 0;
         s32 processed_count = 0;
+        // @ SIMD
+        // @ Lookup tables for cos(t) and sin(t)?
         for (int i = 0; i < feature_count; i++)
         {
             processed_count++;
@@ -906,9 +908,13 @@ void asc_find_lines(
             r32 t_0 = atan2(f.gy, f.gx);
             if (t_0 < 0.0f) t_0 += ASCI_PI;
             int ti_0 = bins_t * t_0 / ASCI_PI;
+            #if 0
             for (int ti  = asci_clamp_s32(ti_0-2, 0, bins_t-1);
                      ti <= asci_clamp_s32(ti_0+2, 0, bins_t-1);
                      ti++)
+            #else
+            int ti = ti_0;
+            #endif
             {
                 r32 t = ASCI_PI * ti / (r32)bins_t;
                 r32 r = x*cos(t)+y*sin(t);
@@ -921,7 +927,7 @@ void asc_find_lines(
                 if (new_count > max_count)
                     max_count = new_count;
             }
-            i += (asci_xor128() % 4);
+            // i += (asci_xor128() % 2);
         }
         for (int i = 0; i < bins_t*bins_r; i++)
         {
@@ -975,10 +981,10 @@ void asc_find_lines(
                 ColorRamp((r32)c/max_count);
                 if (ti == mouse_ti && ri == mouse_ri)
                 {
-                    mouse_t = histogram[ti+ri*bins_t].avg_t;
-                    mouse_r = histogram[ti+ri*bins_t].avg_r;
+                    mouse_t = histogram_maxima[ti+ri*bins_t].avg_t;
+                    mouse_r = histogram_maxima[ti+ri*bins_t].avg_r;
                     glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
-                    SetTooltip("%d", c);
+                    SetTooltip("%d\n%.2f %.2f", c, mouse_t, mouse_r);
                 }
                 glVertex2f(t, r);
             }
