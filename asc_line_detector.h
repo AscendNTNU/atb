@@ -196,17 +196,6 @@ void asc_find_lines(
 #endif
 
 #ifdef ASC_LINE_DETECTOR_IMPLEMENTATION
-
-// For debugging
-#ifndef USE_GDB
-#ifndef GDB
-#define GDB(arg1, arg2) ;
-#endif
-#ifndef GDB_SKIP
-#define GDB_SKIP(arg1, arg2) ;
-#endif
-#endif
-
 #ifndef ASCI_ASSERT
 #include <assert.h>
 #define ASCI_ASSERT assert
@@ -475,82 +464,6 @@ void asci_fisheye_undistort(
     r32 pinhole_fov_x)
 {
     r32 pinhole_f = (in_width/2.0f)/tan(pinhole_fov_x/2.0f);
-    #if 0
-    GDB("fisheye tune",
-    {
-        glLineWidth(1.0f);
-        glPointSize(2.0f);
-        BlendMode();
-        Ortho(0.0f, in_width, 0.0f, in_height);
-        Clear(0.0f, 0.0f, 0.0f, 1.0f);
-        glBegin(GL_LINES);
-        s32 count = 0;
-        for (s32 i = 0; i < in_count; i += 16)
-        {
-            asci_Feature feature = in_features[i];
-            r32 xd = feature.x - fisheye_center_x;
-            r32 yd = feature.y - fisheye_center_y;
-            r32 rd = sqrt(xd*xd+yd*yd);
-            r32 theta = (fisheye_fov/2.0f)*rd/fisheye_radius;
-            if (theta > pinhole_fov_x/2.0f)
-                continue;
-            r32 ru = pinhole_f*tan(theta); // Obs! Different definition of ru
-
-            r32 xu;
-            r32 yu;
-            if (rd > 1.0f)
-            {
-                xu = (xd/rd)*ru;
-                yu = (yd/rd)*ru;
-            }
-            else // Handle limit case in center
-            {
-                xu = xd*ru;
-                yu = yd*ru;
-            }
-
-            r32 gxu;
-            r32 gyu;
-            {
-                r32 ff = fisheye_radius/(fisheye_fov/2.0f);
-                r32 fp = pinhole_f;
-                r32 gxd = (r32)feature.gx;
-                r32 gyd = (r32)feature.gy;
-                r32 DIDphid = -gxd*yd + gyd*xd;
-                r32 DIDrd = (gxd*xd+gyd*yd)/rd;
-
-                r32 DrdDru = (ff/fp)/((ru/fp)*(ru/fp)+1.0f);
-                r32 DIDphiu = DIDphid;
-                r32 DIDru = DIDrd*DrdDru;
-
-                r32 DruDxu = xu/ru;
-                r32 DruDyu = yu/ru;
-
-                r32 DphiuDxu = 0.0f;
-                r32 DphiuDyu = 0.0f;
-                if (asci_abs_r32(yu) > 1.0f)
-                    DphiuDxu = ((xu*xu)/(ru*ru)-1.0f)/yu;
-                if (asci_abs_r32(xu) > 1.0f)
-                    DphiuDyu = (1.0f-(yu*yu)/(ru*ru))/xu;
-
-                gxu = DIDru*DruDxu + DIDphiu*DphiuDxu;
-                gyu = DIDru*DruDyu + DIDphiu*DphiuDyu;
-            }
-
-            s32 ix = asci_round_positive(fisheye_center_x+xu);
-            s32 iy = asci_round_positive(fisheye_center_y+yu);
-
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-            glVertex2f(ix, iy);
-            glVertex2f(ix+gxu/4.0f, iy+gyu/4.0f);
-        }
-        glEnd();
-        SliderFloat("fisheye radius", &fisheye_radius, 500.0f, 1000.0f);
-        SliderFloat("center x", &fisheye_center_x, 200.0f, 1000.0f);
-        SliderFloat("center y", &fisheye_center_y, 200.0f, 1000.0f);
-    });
-    #endif
-
     s32 count = 0;
     for (s32 i = 0; i < in_count; i++)
     {
@@ -619,7 +532,8 @@ void asci_fisheye_undistort(
         out_features[count++] = feature;
     }
 
-    GDB("fisheye",
+    #ifdef ASCDEBUG
+    GDBB("fisheye");
     {
         glLineWidth(1.0f);
         glPointSize(2.0f);
@@ -639,7 +553,9 @@ void asci_fisheye_undistort(
             glVertex2f(feature.x, feature.y);
         }
         glEnd();
-    });
+    }
+    GDBE();
+    #endif
 
     *out_count = count;
 }
@@ -831,7 +747,8 @@ void asc_find_lines(
         features,
         &feature_count);
 
-    GDB_SKIP("sobel features",
+    #ifdef ASCDEBUG
+    GDBBS("sobel features");
     {
         Ortho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
@@ -852,7 +769,9 @@ void asc_find_lines(
             }
         }
         glEnd();
-    });
+    }
+    GDBE();
+    #endif
 
     if (feature_count == 0)
     {
@@ -938,7 +857,8 @@ void asc_find_lines(
             }
         }
 
-        GDB("eht",
+        #ifdef ASCDEBUG
+        GDBB("eht");
         {
             s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
             s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
@@ -1088,7 +1008,9 @@ void asc_find_lines(
             glEnd();
 
             Text("Processed count: %d", processed_count);
-        });
+        }
+        GDBE();
+        #endif
     }
     #endif
 
@@ -1144,7 +1066,8 @@ void asc_find_lines(
         &histogram_max_count);
 
     static s32 dilated_counts[bins_t*bins_r];
-    GDB("eht2",
+    #ifdef ASCDEBUG
+    GDBB("eht2");
     {
         s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
         s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
@@ -1260,7 +1183,9 @@ void asc_find_lines(
         glVertex2f(x0, y0);
         glVertex2f(x1, y1);
         glEnd();
-    });
+    }
+    GDBE();
+    #endif
 
     // Compute the suppression window dimensions in number of histogram cells
     s32 window_len_t = 0;
@@ -1619,7 +1544,8 @@ void asc_find_lines(
             lines_found++;
         }
 
-        GDB("hough histogram",
+        #ifdef ASCDEBUG
+        GDBB("hough histogram");
         {
             s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
             s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
@@ -1695,12 +1621,13 @@ void asc_find_lines(
             r32 t = t_min + (t_max-t_min)*peak_ti/bins_t;
             glVertex2f(t, r);
             glEnd();
-        });
-
-        #ifdef USE_GDB
-        GLuint texture = 0;
+        }
+        GDBE();
         #endif
-        GDB_SKIP("line estimate",
+
+        #ifdef ASCDEBUG
+        GLuint texture = 0;
+        GDBBS("line estimate");
         {
             // if (!texture)
             //     texture = MakeTexture2D(in_rgb, in_width, in_height, GL_RGB);
@@ -1750,7 +1677,9 @@ void asc_find_lines(
             glEnd();
             Text("mean: %.2f\nvar: %.2f\ncount: %d",
                  normal_error_mean, normal_error_std, neighbor_count);
-        });
+        }
+        GDBE();
+        #endif
 
         // Zero the histogram count of votes inside the suppression window
         {
@@ -1783,7 +1712,8 @@ void asc_find_lines(
         }
     }
 
-    GDB("final lines",
+    #ifdef ASCDEBUG
+    GDBB("final lines");
     {
         Ortho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
@@ -1812,7 +1742,9 @@ void asc_find_lines(
             glVertex2f(line.x_max, line.y_max);
         }
         glEnd();
-    });
+    }
+    GDBE();
+    #endif
 
     *out_count = lines_found;
 }
