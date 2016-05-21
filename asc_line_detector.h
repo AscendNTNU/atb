@@ -590,12 +590,11 @@ void asc_find_lines(
         &feature_count);
 
     #ifdef ASCDEBUG
-    GDBBS("sobel features");
+    VDBBS("sobel features");
     {
-        Ortho(0.0f, in_width, 0.0f, in_height);
-        glPointSize(2.0f);
-        Clear(0.0f, 0.0f, 0.0f, 1.0f);
-        BlendMode();
+        vdbOrtho(0.0f, in_width, 0.0f, in_height);
+        glPointSize(4.0f);
+        vdbClear(0.0f, 0.0f, 0.0f, 1.0f);
         glBegin(GL_POINTS);
         {
             for (int i = 0; i < feature_count; i++)
@@ -612,7 +611,7 @@ void asc_find_lines(
         }
         glEnd();
     }
-    GDBE();
+    VDBE();
     #endif
 
     if (feature_count == 0)
@@ -635,10 +634,10 @@ void asc_find_lines(
     }
 
     #ifdef ASCDEBUG
-    GDBBS("features lines");
+    VDBB("features lines");
     {
-        Clear(0.0f, 0.0f, 0.0f, 1.0f);
-        Ortho(0.0f, in_width, 0.0f, in_height);
+        vdbClear(0.0f, 0.0f, 0.0f, 1.0f);
+        vdbOrtho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
         glBegin(GL_POINTS);
         {
@@ -656,8 +655,8 @@ void asc_find_lines(
         }
         glEnd();
 
-        r32 mouse_x = (0.5f+0.5f*input.mouse.x)*in_width;
-        r32 mouse_y = (0.5f-0.5f*input.mouse.y)*in_height;
+        r32 mouse_x = (0.5f+0.5f*MOUSEX)*in_width;
+        r32 mouse_y = (0.5f-0.5f*MOUSEY)*in_height;
 
         r32 avg_t = 0.0f;
         r32 avg_x = 0.0f;
@@ -737,12 +736,12 @@ void asc_find_lines(
             glEnd();
         }
     }
-    GDBE();
+    VDBE();
     #endif
 
     int lines_found = 0;
-    const int bins_t = 32;
-    const int bins_r = 32;
+    const int bins_t = 128;
+    const int bins_r = 128;
     const r32 r_max = sqrt((r32)(in_width*in_width+in_height*in_height));
     const r32 r_min = -r_max;
     asci_HoughCell histogram[bins_t*bins_r];
@@ -764,7 +763,7 @@ void asc_find_lines(
 
     s32 max_count = 0;
     s32 processed_count = 0;
-    s32 count_threshold = 200;
+    s32 count_threshold = 50;
     // @ SIMD
     // @ Lookup tables for cos(t) and sin(t)?
     for (int i = 0; i < feature_count; i++)
@@ -824,7 +823,7 @@ void asc_find_lines(
     // Find local maxima
     // @ Local maxima block size
 
-    int lm_radius = 1;
+    int lm_radius = 5;
 
     // Dilate histogram
     for (int ri = 0; ri < bins_r; ri++)
@@ -961,19 +960,18 @@ void asc_find_lines(
     }
 
     #ifdef ASCDEBUG
-    GDBB("Hough");
+    VDBB("Hough");
     {
-        s32 mouse_ti = asci_round_positive((0.5f+0.5f*input.mouse.x)*bins_t);
-        s32 mouse_ri = asci_round_positive((0.5f-0.5f*input.mouse.y)*bins_r);
+        s32 mouse_ti = asci_round_positive((0.5f+0.5f*MOUSEX)*bins_t);
+        s32 mouse_ri = asci_round_positive((0.5f-0.5f*MOUSEY)*bins_r);
         r32 mouse_t = 0.0f;
         r32 mouse_r = 0.0f;
         s32 mouse_count = 0;
 
-        Clear(0.0f, 0.0f, 0.0f, 1.0f);
+        vdbClear(0.0f, 0.0f, 0.0f, 1.0f);
 
-        Ortho(0.0f, in_width, 0.0f, in_height);
+        vdbOrtho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
-        BlendMode();
         glBegin(GL_POINTS);
         {
             for (int i = 0; i < feature_count; i++)
@@ -990,13 +988,31 @@ void asc_find_lines(
         }
         glEnd();
 
-        Ortho(0.0f, ASCI_PI, r_min, r_max);
-        BlendMode();
+        vdbOrtho(0.0f, ASCI_PI, r_min, r_max);
         glPointSize(8.0f);
         glBegin(GL_POINTS);
         for (int ri = 1; ri < bins_r-1; ri++)
         for (int ti = 1; ti < bins_t-1; ti++)
         {
+            #if 1
+            s32 cm = histogram_maxima[tr_to_i(ti, ri)].count;
+            if (cm > 150)
+            {
+                r32 r = r_min + (r_max-r_min) * ri / bins_r;
+                r32 t = 0.0f + ASCI_PI * ti / bins_t;
+                glColor4f(1.0f, 0.2f, 0.1f, 1.0f);
+                glVertex2f(t, r);
+
+                if (ti == mouse_ti && ri == mouse_ri)
+                {
+                    mouse_t = histogram_maxima[tr_to_i(ti, ri)].avg_t;
+                    mouse_r = histogram_maxima[tr_to_i(ti, ri)].avg_r;
+                    mouse_count = cm;
+                    glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+                    SetTooltip("%d\n%.2f %.2f", cm, mouse_t, mouse_r);
+                }
+            }
+            #else
             r32 r = r_min + (r_max-r_min) * ri / bins_r;
             r32 t = 0.0f + ASCI_PI * ti / bins_t;
             s32 c = histogram[tr_to_i(ti, ri)].count;
@@ -1016,6 +1032,7 @@ void asc_find_lines(
                 SetTooltip("%d\n%.2f %.2f", c, mouse_t, mouse_r);
             }
             glVertex2f(t, r);
+            #endif
         }
         glEnd();
 
@@ -1046,7 +1063,7 @@ void asc_find_lines(
             }
         }
 
-        Ortho(0.0f, in_width, 0.0f, in_height);
+        vdbOrtho(0.0f, in_width, 0.0f, in_height);
         glLineWidth(4.0f);
         glBegin(GL_LINES);
         glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
@@ -1060,7 +1077,7 @@ void asc_find_lines(
 
         // Draw supporting points
         glPointSize(4.0f);
-        BlendMode(GL_ONE, GL_ONE);
+        vdbAdditiveBlend();
         glBegin(GL_POINTS);
         glColor4f(0.05f*0.2f, 0.05f*0.5f, 0.05f*1.0f, 1.0f);
         for (int i = 0; i < feature_count; i++)
@@ -1089,7 +1106,6 @@ void asc_find_lines(
             r32 d2 = abs(normal_x*x2 + normal_y*y2 - mouse_r);
             if (d1 < 40.0f && d2 < 40.0f)
             {
-                BlendMode();
                 glBegin(GL_LINES);
                 glColor4f(1.0f, 0.2f, 0.1f, 1.0f);
                 glVertex2f(x1, y1);
@@ -1109,16 +1125,15 @@ void asc_find_lines(
         Text("Total: %d", mouse_count);
         Text("Total/Inliers: %.2f", support_count > 0 ? mouse_count / (r32)support_count : 0.0f);
     }
-    GDBE();
+    VDBE();
     #endif
 
     #ifdef ASCDEBUG
-    GDBB("final lines");
+    VDBB("final lines");
     {
-        Ortho(0.0f, in_width, 0.0f, in_height);
+        vdbOrtho(0.0f, in_width, 0.0f, in_height);
         glPointSize(2.0f);
-        Clear(0.0f, 0.0f, 0.0f, 1.0f);
-        BlendMode();
+        vdbClear(0.0f, 0.0f, 0.0f, 1.0f);
         glBegin(GL_POINTS);
         {
             for (int i = 0; i < feature_count; i++)
@@ -1143,7 +1158,7 @@ void asc_find_lines(
         }
         glEnd();
     }
-    GDBE();
+    VDBE();
     #endif
 
     *out_count = lines_found;
@@ -1160,33 +1175,4 @@ void asc_find_lines(
 
 // Todo list
 
-// @ Altitude-based threshold:
-//   Rejection based on squared normal distance alone will not be robust
-//   against changing the camera height, since thick lines will give a large
-//   response. Need to either have altitude-based threshold, or use a different
-//   error metric. For example, also consider normal distance variance.
-
-// @ Least-square fitting
-//   Currently disabled because it works badly in the presence of outliers.
-//   Want to atleast partially prune lines before performing minimzation.
-//   Want to do some sort of prepass where we look at gaps and outliers...?
-//   Prepass RANSAC on x0,y0,x1,y1?
-//     Count inliers, outliers (positive detections outside line, and negative
-//     detections inside line... somehow?)
-
-// @ Better neighborhood collection
-//   We have a tradeoff between rejecting votes that have large spatial
-//   seperation from the initial guess, and keeping them to determine
-//   the fitness of the line in the end. Jfr. image video0042.
-//   This might be fixed by using error metrics for rejection, such as
-//   variance _and_ average normal error.
-
-// @ SIMD Sobel
-//   Compute average? Compute sum?
-//   Skip pushing entire block if almost all less than threshold
-
-// @ Gradient rejection threshold
-//   Too high?
-
-// @ Low count
-//   Do we also want to reject lines with low neighborhood count
+// @ Double threshold in sobel filter: upper and lower bound
