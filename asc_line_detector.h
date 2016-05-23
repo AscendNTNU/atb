@@ -215,6 +215,22 @@ void asc_find_lines(
 #define u08 uint8_t
 #define r32 float
 
+struct asci_Feature
+{
+    s32 x;
+    s32 y;
+    s16 gx;
+    s16 gy;
+    s16 gg;
+};
+
+struct asci_HoughCell
+{
+    r32 avg_r;
+    r32 avg_t;
+    s32 count;
+};
+
 s32 asci_round_positive(r32 x)
 {
     return (s32)(x + 0.5f);
@@ -268,14 +284,21 @@ r32 asci_abs_r32(r32 x)
     return fabs(x);
 }
 
-struct asci_Feature
+// This algorithm has a maximal period of 2^128 − 1.
+// https://en.wikipedia.org/wiki/Xorshift
+u32 asci_xor128()
 {
-    s32 x;
-    s32 y;
-    s16 gx;
-    s16 gy;
-    s16 gg;
-};
+    static u32 x = 123456789;
+    static u32 y = 362436069;
+    static u32 z = 521288629;
+    static u32 w = 88675123;
+    u32 t = x ^ (x << 11);
+    x = y;
+    y = z;
+    z = w;
+    w = w ^ (w >> 19) ^ t ^ (t >> 8);
+    return w;
+}
 
 #ifdef ASC_LINE_DETECTOR_SSE
 #include "xmmintrin.h"
@@ -459,22 +482,6 @@ void asci_sobel(
 }
 #endif
 
-// This algorithm has a maximal period of 2^128 − 1.
-// https://en.wikipedia.org/wiki/Xorshift
-u32 asci_xor128()
-{
-    static u32 x = 123456789;
-    static u32 y = 362436069;
-    static u32 z = 521288629;
-    static u32 w = 88675123;
-    u32 t = x ^ (x << 11);
-    x = y;
-    y = z;
-    z = w;
-    w = w ^ (w >> 19) ^ t ^ (t >> 8);
-    return w;
-}
-
 void asci_fisheye_undistort(
     asci_Feature *in_features,
     s32 in_count,
@@ -560,12 +567,102 @@ void asci_fisheye_undistort(
     *out_count = count;
 }
 
-struct asci_HoughCell
+s32 _asci_tr_to_i(s32 bins_t, s32 bins_r, s32 ti, s32 ri)
 {
-    r32 avg_r;
-    r32 avg_t;
-    s32 count;
-};
+    ASCI_ASSERT(ti >= 0 && ti < bins_t &&
+                ri >= 0 && ri < bins_r);
+    return ti + ri*bins_t;
+}
+
+#define tr_to_i(ti, ri) _asci_tr_to_i(bins_t, bins_r, ti, ri)
+
+void asci_hough_transform(
+    asci_HoughCell *histogram,
+    s32 bins_t,
+    s32 bins_r,
+    r32 t_min,
+    r32 t_max,
+    r32 r_min,
+    r32 r_max,
+    asci_Feature *features,
+    s32 feature_count,
+    s32 *out_peak_count)
+{
+    s32 processed_count = 0;
+    s32 peak_count = 0;
+    for (s32 i = 0; i < feature_count; i++)
+    {
+        processed_count++;
+        asci_Feature f = features[i];
+        r32 x = f.x;
+        r32 y = f.y;
+
+        r32 t_0 = atan2((r32)f.gy, (r32)f.gx);
+        if (t_0 < 0.0f)
+            t_0 += ASCI_PI;
+
+        s32 ti_0 = asci_floor_positive(bins_t * t_0 / ASCI_PI);
+        s32 ti_delta = 2;
+        s32 ti_start = asci_clamp_s32(ti_0-ti_delta, 0, bins_t-1);
+        s32 ti_end = asci_clamp_s32(ti_0+ti_delta, 0, bins_t-1);
+
+        for (s32 ti = ti_start; ti <= ti_end; ti++)
+        {
+            // @ Blue noise dither + temporal filter
+            r32 t = ASCI_PI * ti / (r32)bins_t;
+            r32 r = x*cos(t)+y*sin(t);
+            s32 ri = asci_floor_positive(bins_r * (r - r_min) / (r_max - r_min));
+            ri = asci_clamp_s32(ri, 0, bins_r-1);
+
+            asci_HoughCell *hc = &histogram[tr_to_i(ti, ri)];
+            hc->avg_t += t;
+            hc->avg_r += r;
+            s32 new_count = ++hc->count;
+            if (new_count > peak_count)
+                peak_count = new_count;
+        }
+        // @ Skip amount
+        // i += (asci_xor128() % 2);
+    }
+
+    // Compute cell averages
+    for (s32 i = 0; i < bins_t*bins_r; i++)
+    {
+        if (histogram[i].count > 0)
+        {
+            histogram[i].avg_t /= (r32)histogram[i].count;
+            histogram[i].avg_r /= (r32)histogram[i].count;
+        }
+    }
+
+    *out_peak_count = peak_count;
+}
+
+void asci_dilate_histogram(
+    asci_HoughCell *histogram,
+    s32 *dilated_counts,
+    s32 bins_t,
+    s32 bins_r,
+    s32 radius)
+{
+    for (s32 ri = 0; ri < bins_r; ri++)
+    for (s32 ti = 0; ti < bins_t; ti++)
+    {
+        // @ identification with theta
+        s32 c_max = histogram[tr_to_i(ti, ri)].count;
+        s32 nri0 = asci_max_s32(ri-radius, 0);
+        s32 nri1 = asci_min_s32(ri+radius, bins_r-1);
+        s32 nti0 = asci_max_s32(ti-radius, 0);
+        s32 nti1 = asci_min_s32(ti+radius, bins_t-1);
+        for (s32 nri = nri0; nri <= nri1; nri++)
+        for (s32 nti = nti0; nti <= nti1; nti++)
+        {
+            s32 c = histogram[tr_to_i(nti, nri)].count;
+            c_max = asci_max_s32(c, c_max);
+        }
+        dilated_counts[tr_to_i(ti, ri)] = c_max;
+    }
+}
 
 void asc_find_lines(
     u08 *in_rgb,
@@ -579,6 +676,7 @@ void asc_find_lines(
 {
     ASCI_ASSERT(in_width <= ASCI_MAX_WIDTH);
     ASCI_ASSERT(in_height <= ASCI_MAX_HEIGHT);
+
     static asci_Feature features[ASCI_MAX_WIDTH*ASCI_MAX_HEIGHT];
     s32 feature_count = 0;
     asci_sobel(
@@ -608,7 +706,7 @@ void asc_find_lines(
                                options.pinhole_fov_x);
     }
 
-    #ifdef ASCDEBUG
+    #ifdef ASCDEBUGS
     VDBBS("sobel features");
     {
         vdbOrtho(0.0f, in_width, 0.0f, in_height);
@@ -633,7 +731,7 @@ void asc_find_lines(
     VDBE();
     #endif
 
-    #ifdef ASCDEBUG
+    #ifdef ASCDEBUGS
     VDBB("features lines");
     {
         vdbClear(0.0f, 0.0f, 0.0f, 1.0f);
@@ -739,17 +837,20 @@ void asc_find_lines(
     VDBE();
     #endif
 
-    int lines_found = 0;
-    const int bins_t = 128;
-    const int bins_r = 128;
+    // The Hough histogram consists of a fixed number of bins
+    // in t (angle parameter) and r (distance parameter),
+    // mapping the intervals [t_min, t_max], [r_min, r_max].
+    const s32 bins_t = 128;
+    const s32 bins_r = 128;
     const r32 r_max = sqrt((r32)(in_width*in_width+in_height*in_height));
     const r32 r_min = -r_max;
     const r32 t_min = 0.0f;
     const r32 t_max = ASCI_PI;
-    asci_HoughCell histogram[bins_t*bins_r];
-    asci_HoughCell histogram_maxima[bins_t*bins_r];
-    s32 dilated_counts[bins_t*bins_r];
-    for (int i = 0; i < bins_t*bins_r; i++)
+
+    static asci_HoughCell histogram[bins_t*bins_r];
+    static asci_HoughCell histogram_maxima[bins_t*bins_r];
+    static s32 dilated_counts[bins_t*bins_r];
+    for (s32 i = 0; i < bins_t*bins_r; i++)
     {
         histogram[i].count = 0;
         histogram[i].avg_t = 0.0f;
@@ -758,96 +859,33 @@ void asc_find_lines(
         histogram_maxima[i].count = 0;
         histogram_maxima[i].avg_t = 0.0f;
         histogram_maxima[i].avg_r = 0.0f;
+
         dilated_counts[i] = 0;
     }
 
-    #define tr_to_i(ti, ri) ((ti)+(ri)*bins_t)
+    s32 hough_peak_count = 0;
+    asci_hough_transform(histogram, bins_t, bins_r,
+                         t_min, t_max, r_min, r_max,
+                         features, feature_count,
+                         &hough_peak_count);
 
-    s32 max_count = 0;
-    s32 processed_count = 0;
-    s32 count_threshold = 50;
-    // @ SIMD
-    // @ Lookup tables for cos(t) and sin(t)?
-    for (int i = 0; i < feature_count; i++)
-    {
-        processed_count++;
-        asci_Feature f = features[i];
-        r32 x = f.x;
-        r32 y = f.y;
+    // Find local maxima by nonmaxima suppression:
+    // 1) Dilate the histogram counts
+    // 2) Compare original count table with dilated table
+    //    If    c_original == c_dilated: Local maxima
+    //    Else: Not a local maxima, set value to zero
 
-        r32 t_0 = atan2(f.gy, f.gx);
-        if (t_0 < 0.0f)
-            t_0 += ASCI_PI;
+    s32 local_maxima_radius = 3; // @ Local maxima radius
+    asci_dilate_histogram(histogram, dilated_counts,
+                          bins_t, bins_r,
+                          local_maxima_radius);
 
-        int ti_0 = asci_floor_positive(bins_t * t_0 / ASCI_PI);
-        #if 1
-        for (int ti  = asci_clamp_s32(ti_0-2, 0, bins_t-1);
-                 ti <= asci_clamp_s32(ti_0+2, 0, bins_t-1);
-                 ti++)
-        #else
-        int ti = ti_0;
-        #endif
-        {
-            // @ Blue noise dither + temporal filter
-            // r32 noise = (asci_xor128() % 1024) / 1024.0f;
-            // r32 t = ASCI_PI * (ti + noise) / (r32)bins_t;
-            // r32 t = t_0 + (noise/bins_t)*ASCI_PI;
-            // r32 t = t_0;
-            r32 t = ASCI_PI * ti / (r32)bins_t;
-            r32 r = x*cos(t)+y*sin(t);
-            int ri = asci_floor_positive(bins_r * (r - r_min) / (r_max - r_min));
-            ri = asci_clamp_s32(ri, 0, bins_r-1);
-            // ti = asci_clamp_s32(ti, 0, bins_t-1);
+    s32 lines_found = 0;
+    s32 vote_threshold = 50;
 
-            // @ Blue noise dither
-            // Leak out as kernel instead of focus on single cell
-
-            asci_HoughCell *hc = &histogram[tr_to_i(ti, ri)];
-            hc->avg_t += t;
-            hc->avg_r += r;
-            s32 new_count = ++hc->count;
-            if (new_count > max_count)
-                max_count = new_count;
-        }
-        // i += (asci_xor128() % 2);
-    }
-
-    // Compute cell averages
-    for (int i = 0; i < bins_t*bins_r; i++)
-    {
-        if (histogram[i].count > 0)
-        {
-            histogram[i].avg_t /= (r32)histogram[i].count;
-            histogram[i].avg_r /= (r32)histogram[i].count;
-        }
-    }
-
-    // Find local maxima
-    // @ Local maxima block size
-
-    int lm_radius = 5;
-
-    // Dilate histogram
-    for (int ri = 0; ri < bins_r; ri++)
-    for (int ti = 0; ti < bins_t; ti++)
-    {
-        int c = histogram[tr_to_i(ti, ri)].count;
-        // @ identification with theta
-        int nri0 = asci_max_s32(ri-lm_radius, 0);
-        int nri1 = asci_min_s32(ri+lm_radius, bins_r-1);
-        int nti0 = asci_max_s32(ti-lm_radius, 0);
-        int nti1 = asci_min_s32(ti+lm_radius, bins_t-1);
-        for (int nri = nri0; nri <= nri1; nri++)
-        for (int nti = nti0; nti <= nti1; nti++)
-        {
-            c = asci_max_s32(c, histogram[tr_to_i(nti, nri)].count);
-        }
-        dilated_counts[tr_to_i(ti, ri)] = c;
-    }
-
-    // Nonmaximum suppression
-    for (int ri = lm_radius; ri < bins_r-lm_radius; ri++)
-    for (int ti = lm_radius; ti < bins_t-lm_radius; ti++)
+    // Extract maxima
+    for (s32 ri = local_maxima_radius; ri < bins_r-local_maxima_radius; ri++)
+    for (s32 ti = local_maxima_radius; ti < bins_t-local_maxima_radius; ti++)
     {
         s32 c_original = histogram[tr_to_i(ti, ri)].count;
         if (c_original < 1)
@@ -861,10 +899,10 @@ void asc_find_lines(
             {
                 r32 sum_t = 0.0f;
                 r32 sum_r = 0.0f;
-                for (int nri = ri-lm_radius; nri <= ri+lm_radius; nri++)
-                for (int nti = ti-lm_radius; nti <= ti+lm_radius; nti++)
+                for (int nri = ri-local_maxima_radius; nri <= ri+local_maxima_radius; nri++)
+                for (int nti = ti-local_maxima_radius; nti <= ti+local_maxima_radius; nti++)
                 {
-                    asci_HoughCell c = histogram[nti+nri*bins_t];
+                    asci_HoughCell c = histogram[tr_to_i(nti, nri)];
                     sum_t += c.avg_t*c.count;
                     sum_r += c.avg_r*c.count;
                     sum_n += c.count;
@@ -877,7 +915,7 @@ void asc_find_lines(
             histogram_maxima[tr_to_i(ti, ri)].avg_r = avg_r;
             histogram_maxima[tr_to_i(ti, ri)].count = sum_n;
 
-            if (lines_found < max_count && sum_n > count_threshold)
+            if (lines_found < max_out_count && sum_n > vote_threshold)
             {
                 r32 normal_x = cos(avg_t);
                 r32 normal_y = sin(avg_t);
@@ -937,59 +975,59 @@ void asc_find_lines(
                 r32 x = (r32)features[i].x;
                 r32 y = (r32)features[i].y;
 
+                #if 1
                 if (abs(gx) > abs(gy))
                     glColor4f(0.5f*0.9f, 0.5f*0.2f, 0.5f*0.1f, 1.0f);
                 else
                     glColor4f(0.5f*0.2f, 0.5f*0.4f, 0.5f*0.9f, 1.0f);
+                #else
+                glColor4f(0.4f, 0.1f, 0.1f, 1.0f);
+                #endif
                 glVertex2f(x, y);
             }
         }
         glEnd();
 
         vdbOrtho(0.0f, ASCI_PI, r_min, r_max);
+
+        glPointSize(3.0f);
+        glBegin(GL_POINTS);
+        glColor4f(1.0f, 1.0f, 1.0f, 0.1f);
+        for (int ri = 1; ri < bins_r-1; ri++)
+        for (int ti = 1; ti < bins_t-1; ti++)
+        {
+            r32 r = r_min + (r_max-r_min) * ri / bins_r;
+            r32 t = t_min + (t_max-t_min) * ti / bins_t;
+            glVertex2f(t, r);
+        }
+        glEnd();
+
         glPointSize(8.0f);
         glBegin(GL_POINTS);
         for (int ri = 1; ri < bins_r-1; ri++)
         for (int ti = 1; ti < bins_t-1; ti++)
         {
-            #if 1
             s32 cm = histogram_maxima[tr_to_i(ti, ri)].count;
             if (cm > 150)
             {
+                #if 0
                 r32 r = r_min + (r_max-r_min) * ri / bins_r;
-                r32 t = 0.0f + ASCI_PI * ti / bins_t;
-                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+                r32 t = t_min + (t_max-t_min) * ti / bins_t;
+                #else
+                r32 t = histogram_maxima[tr_to_i(ti, ri)].avg_t;
+                r32 r = histogram_maxima[tr_to_i(ti, ri)].avg_r;
+                #endif
+                vdbColorRamp(cm / (r32)hough_peak_count);
                 glVertex2f(t, r);
 
                 if (ti == mouse_ti && ri == mouse_ri)
                 {
-                    mouse_t = histogram_maxima[tr_to_i(ti, ri)].avg_t;
-                    mouse_r = histogram_maxima[tr_to_i(ti, ri)].avg_r;
+                    // mouse_t = histogram_maxima[tr_to_i(ti, ri)].avg_t;
+                    // mouse_r = histogram_maxima[tr_to_i(ti, ri)].avg_r;
                     mouse_count = cm;
                     SetTooltip("%d\n%.2f %.2f", cm, mouse_t, mouse_r);
                 }
             }
-            #else
-            r32 r = r_min + (r_max-r_min) * ri / bins_r;
-            r32 t = 0.0f + ASCI_PI * ti / bins_t;
-            s32 c = histogram[tr_to_i(ti, ri)].count;
-            s32 cm = histogram_maxima[tr_to_i(ti, ri)].count;
-            if (c < 1)
-                continue;
-            if (cm > count_threshold)
-                glColor4f(1.0f, 0.2f, 0.1f, 1.0f);
-            else
-                ColorRamp((r32)c/max_count);
-            if (ti == mouse_ti && ri == mouse_ri)
-            {
-                mouse_t = histogram_maxima[tr_to_i(ti, ri)].avg_t;
-                mouse_r = histogram_maxima[tr_to_i(ti, ri)].avg_r;
-                mouse_count = cm;
-                glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
-                SetTooltip("%d\n%.2f %.2f", c, mouse_t, mouse_r);
-            }
-            glVertex2f(t, r);
-            #endif
         }
         glEnd();
 
@@ -1068,7 +1106,7 @@ void asc_find_lines(
     VDBE();
     #endif
 
-    #ifdef ASCDEBUG
+    #ifdef ASCDEBUGS
     VDBB("final lines");
     {
         vdbOrtho(0.0f, in_width, 0.0f, in_height);
@@ -1111,6 +1149,7 @@ void asc_find_lines(
 #undef u16
 #undef u08
 #undef r32
+#undef tr_to_i
 #endif
 
 // Todo list
