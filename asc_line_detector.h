@@ -151,6 +151,9 @@ struct asc_Line
     float color_r;
     float color_g;
     float color_b;
+
+    // How certain is this estimate [0, 1]
+    r32 certainty;
 };
 
 struct asc_LineDetectorOptions
@@ -643,17 +646,18 @@ void asci_dilate_histogram(
     s32 *dilated_counts,
     s32 bins_t,
     s32 bins_r,
-    s32 radius)
+    s32 radius_t,
+    s32 radius_r)
 {
     for (s32 ri = 0; ri < bins_r; ri++)
     for (s32 ti = 0; ti < bins_t; ti++)
     {
         // @ identification with theta
         s32 c_max = histogram[tr_to_i(ti, ri)].count;
-        s32 nri0 = asci_max_s32(ri-radius, 0);
-        s32 nri1 = asci_min_s32(ri+radius, bins_r-1);
-        s32 nti0 = asci_max_s32(ti-radius, 0);
-        s32 nti1 = asci_min_s32(ti+radius, bins_t-1);
+        s32 nti0 = asci_max_s32(ti-radius_t, 0);
+        s32 nti1 = asci_min_s32(ti+radius_t, bins_t-1);
+        s32 nri0 = asci_max_s32(ri-radius_r, 0);
+        s32 nri1 = asci_min_s32(ri+radius_r, bins_r-1);
         for (s32 nri = nri0; nri <= nri1; nri++)
         for (s32 nti = nti0; nti <= nti1; nti++)
         {
@@ -706,7 +710,7 @@ void asc_find_lines(
                                options.pinhole_fov_x);
     }
 
-    #ifdef ASCDEBUGS
+    #ifdef ASCDEBUG
     VDBBS("sobel features");
     {
         vdbOrtho(0.0f, in_width, 0.0f, in_height);
@@ -727,6 +731,120 @@ void asc_find_lines(
             }
         }
         glEnd();
+
+        const int bins_t = 64;
+        const int bins_d = 128;
+        static r32 angle_histogram[bins_t];
+        static r32 dist_histogram1[bins_d];
+        static r32 dist_histogram2[bins_d];
+        static r32 *dist_histogram[] = { dist_histogram1, dist_histogram2 };
+        r32 t_min = 0.0f;
+        r32 t_max = ASCI_PI;
+        r32 d_max = sqrt((r32)(in_width*in_width+in_height*in_height));
+        r32 d_min = -d_max;
+        static r32 maximas[2];
+        if (vdb_isFirstLoopIteration())
+        {
+            for (s32 i = 0; i < bins_t; i++)
+            {
+                angle_histogram[i] = 0.0f;
+            }
+            for (s32 i = 0; i < feature_count; i++)
+            {
+                r32 gg = (r32)features[i].gg;
+                r32 gx = (r32)features[i].gx/gg;
+                r32 gy = (r32)features[i].gy/gg;
+                r32 t = atan2(gy, gx);
+                s32 ti = asci_round_positive(bins_t*(t-t_min)/(t_max-t_min));
+                for (s32 delta = -1; delta <= 1; delta++)
+                {
+                    s32 ti_write = (ti + delta)%bins_t;
+                    r32 w = exp(-delta*delta/2.0f);
+                    angle_histogram[ti_write] += w;
+                }
+            }
+
+
+            // find maximas / fit to gauss distribution / something clever
+            for (s32 it = 0; it < 2; it++)
+            {
+                s32 bin_max = 0;
+                for (s32 bin = 0; bin < bins_t; bin++)
+                {
+                    if (angle_histogram[bin] >
+                        angle_histogram[bin_max])
+                    {
+                        bin_max = bin;
+                    }
+                }
+
+                maximas[it] = t_min + (t_max-t_min)*bin_max/bins_t;
+
+                // suppress neighbors
+
+                for (s32 bin = bin_max-4; bin <= bin_max+4; bin++)
+                {
+                    angle_histogram[bin%bins_t] = 0.0f;
+                }
+            }
+
+            // stupid stuff
+
+            #if 0
+
+            for (s32 i = 0; i < bins_d; i++)
+            {
+                dist_histogram[0][i] = 0.0f;
+                dist_histogram[1][i] = 0.0f;
+            }
+
+            r32 t0 = maximas[0];
+            r32 t1 = maximas[1];
+            r32 nx[] = {cos(t0), cos(t1)};
+            r32 ny[] = {sin(t0), sin(t1)};
+            for (s32 i = 0; i < feature_count; i++)
+            {
+                for (s32 j = 0; j < 2; j++)
+                {
+                    r32 gg = (r32)features[i].gg;
+                    r32 gx = (r32)features[i].gx/gg;
+                    r32 gy = (r32)features[i].gy/gg;
+
+                    if (gx*nx[j] + gy*ny[j] > 0.8f)
+                    {
+                        r32 d = features[i].x*nx[j] + features[i].y*ny[j];
+                        s32 di = bins_d*(d-d_min)/(d_max-d_min);
+                        for (s32 delta  = -4; delta <= +4; delta++)
+                        {
+                            s32 k = asci_clamp_s32(di+delta, 0, bins_d-1);
+                            r32 weight = exp(-delta*delta/5.0f);
+                            dist_histogram[j][k] += weight;
+                        }
+                    }
+                }
+            }
+            #endif
+        }
+
+        for (s32 i = 0; i < 2; i++)
+        {
+            r32 t = maximas[i];
+            vdbOrtho(0.0f, in_width, 0.0f, in_height);
+            glLineWidth(4.0f);
+            glBegin(GL_LINES);
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            glVertex2f(100.0f, 100.0f);
+            glVertex2f(100.0f+100.0f*cos(t), 100.0f+100.0f*sin(t));
+            glEnd();
+        }
+
+        Begin("Histogram");
+        PlotHistogram("##Angle histogram", angle_histogram, bins_t, 0, 0, FLT_MAX, FLT_MAX, ImVec2(240, 120));
+        PlotHistogram("##Dist histogram1", dist_histogram[0], bins_d, 0, 0, FLT_MAX, FLT_MAX, ImVec2(240, 120));
+        PlotHistogram("##Dist histogram2", dist_histogram[1], bins_d, 0, 0, FLT_MAX, FLT_MAX, ImVec2(240, 120));
+        End();
+
+        Text("%d features", feature_count);
     }
     VDBE();
     #endif
@@ -841,7 +959,7 @@ void asc_find_lines(
     // in t (angle parameter) and r (distance parameter),
     // mapping the intervals [t_min, t_max], [r_min, r_max].
     const s32 bins_t = 128;
-    const s32 bins_r = 128;
+    const s32 bins_r = 256;
     const r32 r_max = sqrt((r32)(in_width*in_width+in_height*in_height));
     const r32 r_min = -r_max;
     const r32 t_min = 0.0f;
@@ -875,17 +993,19 @@ void asc_find_lines(
     //    If    c_original == c_dilated: Local maxima
     //    Else: Not a local maxima, set value to zero
 
-    s32 local_maxima_radius = 3; // @ Local maxima radius
+    s32 local_maxima_wt = 3; // @ Local maxima radius
+    s32 local_maxima_wr = 3;
     asci_dilate_histogram(histogram, dilated_counts,
                           bins_t, bins_r,
-                          local_maxima_radius);
+                          local_maxima_wt,
+                          local_maxima_wr);
 
     s32 lines_found = 0;
-    s32 vote_threshold = 50;
+    s32 vote_threshold = 500;
 
     // Extract maxima
-    for (s32 ri = local_maxima_radius; ri < bins_r-local_maxima_radius; ri++)
-    for (s32 ti = local_maxima_radius; ti < bins_t-local_maxima_radius; ti++)
+    for (s32 ri = local_maxima_wr; ri < bins_r-local_maxima_wr; ri++)
+    for (s32 ti = local_maxima_wt; ti < bins_t-local_maxima_wt; ti++)
     {
         s32 c_original = histogram[tr_to_i(ti, ri)].count;
         if (c_original < 1)
@@ -899,8 +1019,8 @@ void asc_find_lines(
             {
                 r32 sum_t = 0.0f;
                 r32 sum_r = 0.0f;
-                for (int nri = ri-local_maxima_radius; nri <= ri+local_maxima_radius; nri++)
-                for (int nti = ti-local_maxima_radius; nti <= ti+local_maxima_radius; nti++)
+                for (int nri = ri-local_maxima_wr; nri <= ri+local_maxima_wr; nri++)
+                for (int nti = ti-local_maxima_wt; nti <= ti+local_maxima_wt; nti++)
                 {
                     asci_HoughCell c = histogram[tr_to_i(nti, nri)];
                     sum_t += c.avg_t*c.count;
@@ -947,6 +1067,7 @@ void asc_find_lines(
                 line.y_min = y0;
                 line.x_max = x1;
                 line.y_max = y1;
+                line.certainty = (sum_n / (r32)(2*local_maxima_wt+2*local_maxima_wr+2)) / (r32)hough_peak_count;
                 out_lines[lines_found++] = line;
             }
         }
@@ -988,27 +1109,37 @@ void asc_find_lines(
         }
         glEnd();
 
-        vdbOrtho(0.0f, ASCI_PI, r_min, r_max);
-
-        glPointSize(3.0f);
+        vdbOrtho(t_min, t_max, r_min, r_max);
+        #if 0
+        glPointSize(4.0f);
         glBegin(GL_POINTS);
-        glColor4f(1.0f, 1.0f, 1.0f, 0.1f);
         for (int ri = 1; ri < bins_r-1; ri++)
         for (int ti = 1; ti < bins_t-1; ti++)
         {
             r32 r = r_min + (r_max-r_min) * ri / bins_r;
             r32 t = t_min + (t_max-t_min) * ti / bins_t;
-            glVertex2f(t, r);
+            s32 c = histogram[tr_to_i(ti, ri)].count;
+            if (c > 0)
+            {
+                vdbColorRamp(c / (r32)hough_peak_count);
+                glVertex2f(t, r);
+                if (ti == mouse_ti && ri == mouse_ri)
+                {
+                    mouse_t = t;
+                    mouse_r = r;
+                    SetTooltip("%d", c);
+                }
+            }
         }
         glEnd();
-
+        #else
         glPointSize(8.0f);
         glBegin(GL_POINTS);
         for (int ri = 1; ri < bins_r-1; ri++)
         for (int ti = 1; ti < bins_t-1; ti++)
         {
             s32 cm = histogram_maxima[tr_to_i(ti, ri)].count;
-            if (cm > 150)
+            if (cm > vote_threshold)
             {
                 #if 0
                 r32 r = r_min + (r_max-r_min) * ri / bins_r;
@@ -1030,6 +1161,7 @@ void asc_find_lines(
             }
         }
         glEnd();
+        #endif
 
         r32 normal_x = cos(mouse_t);
         r32 normal_y = sin(mouse_t);
@@ -1106,7 +1238,37 @@ void asc_find_lines(
     VDBE();
     #endif
 
-    #ifdef ASCDEBUGS
+    // @ adaptive thresholding
+
+    // Sort lines such that they appear descending in saliency
+    // partitioned into at most two+1 groups. If we detect the two
+    // orthogonal directions of the grid, we get two groups for
+    // those, and one for the 'other'. If we only detect one of
+    // the directions, we get one groups for that, and one for
+    // noisy lines.
+
+    r32 angle_histogram[bins_t];
+    for (s32 i = 0; i < bins_t; i++)
+        angle_histogram[i] = 0.0f;
+    for (s32 i = 0; i < lines_found; i++)
+    {
+        asc_Line line = out_lines[i];
+        r32 certainty = line.certainty;
+        r32 t = line.t;
+        s32 ti = bins_t*(t-t_min)/(t_max-t_min);
+        ti = asci_clamp_s32(ti, 0, bins_t-1);
+        for (s32 di = -15; di < 15; di++)
+        {
+            s32 wi = ti+di;
+            if (wi >= 0 && wi < bins_t)
+            {
+                r32 w = certainty*exp(-di*di/25.0f);
+                angle_histogram[wi] += w;
+            }
+        }
+    }
+
+    #ifdef ASCDEBUG
     VDBB("final lines");
     {
         vdbOrtho(0.0f, in_width, 0.0f, in_height);
@@ -1118,8 +1280,18 @@ void asc_find_lines(
             {
                 r32 x = (r32)features[i].x;
                 r32 y = (r32)features[i].y;
+                r32 gx = (r32)features[i].gx;
+                r32 gy = (r32)features[i].gy;
 
+                #if 1
+                if (abs(gx) > abs(gy))
+                    glColor4f(0.5f*0.9f, 0.5f*0.2f, 0.5f*0.1f, 1.0f);
+                else
+                    glColor4f(0.5f*0.2f, 0.5f*0.4f, 0.5f*0.9f, 1.0f);
+                #else
                 glColor4f(0.75f, 0.75f, 0.75f, 1.0f);
+                #endif
+
                 glVertex2f(x, y);
             }
         }
@@ -1130,11 +1302,17 @@ void asc_find_lines(
         for (s32 i = 0; i < lines_found; i++)
         {
             asc_Line line = out_lines[i];
-            glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
+            glColor4f(1.0f, 0.9f, 0.2f, line.certainty);
+            // vdbColorRamp(line.certainty);
+            // glColor4f(1.0f, 0.2f, 0.2f, 1.0f);
             glVertex2f(line.x_min, line.y_min);
             glVertex2f(line.x_max, line.y_max);
         }
         glEnd();
+
+        Begin("Angle histogram");
+        PlotLines("##Angle histogram", angle_histogram, bins_t, 0, 0, FLT_MAX, FLT_MAX, ImVec2(240, 120));
+        End();
     }
     VDBE();
     #endif
